@@ -1,0 +1,296 @@
+version: 1
+language: ru
+
+profile:
+  name: "GeoNexa Proxima — геотехнологический исследовательский профиль"
+  mission: >-
+    Находить научно сильные и практически применимые методы на пересечении
+    геотехники, инженерной геологии, геофизики, дистанционного зондирования и AI,
+    которые можно перенести в мониторинг, моделирование и управление рисками.
+  content_languages: [ru, en]
+  preferred_item_kinds: [paper, method, software, dataset]
+  positive_signals:
+    - открытый код или воспроизводимый pipeline
+    - доступный датасет и прозрачный протокол валидации
+    - проверка на натурных или промышленных данных
+    - оценка неопределённости и физическая интерпретируемость
+    - сравнение с сильными baseline-методами
+    - переносимость между площадками, регионами и сенсорами
+  negative_signals:
+    - только синтетические результаты без проверки переноса
+    - отсутствие описания данных или метрик
+    - утечка данных между train и test
+    - неподтверждённые маркетинговые заявления
+    - чисто отраслевые новости без метода, данных или инженерного результата
+
+# High-recall discovery uses several intersections instead of one vague
+# "geotechnical AI" query. Semantic filtering and reranking happen later.
+discovery_queries:
+  - '("soil liquefaction" AND "neural operator")'
+  - '("geotechnical engineering" AND "foundation model")'
+  - '("soil mechanics" AND "graph neural network")'
+  - '("constitutive model" AND "machine learning")'
+  - '("discrete element method" AND "differentiable simulation")'
+  - '("finite element method" AND "surrogate model")'
+  - '("cyclic loading" AND "state space model")'
+  - '("soil-structure interaction" AND "physics-informed")'
+  - '("geomechanics" AND "neural ODE")'
+  - '("slope stability" AND "uncertainty quantification")'
+  - '("geotechnical monitoring" AND "self-supervised learning")'
+  - '("poromechanics" AND "operator learning")'
+
+domains:
+  - id: geotechnical_engineering
+    name: Геотехника и механика грунтов
+    weight: 1.0
+    description: Поведение грунтов, оснований и геотехнических сооружений.
+    terms:
+      - geotechnical engineering
+      - soil mechanics
+      - rock mechanics
+      - механика грунтов
+      - механика горных пород
+      - основания и фундаменты
+    subtopics:
+      - foundations and piles
+      - slopes and landslides
+      - retaining structures and excavations
+      - tunnels and underground construction
+      - constitutive modelling
+      - soil-structure interaction
+      - settlement and deformation
+      - liquefaction and seismic response
+
+  - id: engineering_geology
+    name: Инженерная геология и геориски
+    weight: 0.95
+    description: Свойства геологической среды, опасные процессы и устойчивость территорий.
+    terms:
+      - engineering geology
+      - geohazards
+      - geological risk
+      - инженерно-геологические изыскания
+      - оползни
+      - карст
+      - просадочность
+    subtopics:
+      - site investigation
+      - geological hazards
+      - landslide susceptibility
+      - karst and subsidence
+      - permafrost engineering
+      - urban geology
+
+  - id: geotechnical_monitoring
+    name: Геотехнический мониторинг
+    weight: 1.0
+    description: Наблюдение за деформациями, нагрузками и состоянием сооружений.
+    terms:
+      - geotechnical monitoring
+      - structural health monitoring
+      - deformation monitoring
+      - instrumentation
+      - геотехнический мониторинг
+      - мониторинг деформаций
+    subtopics:
+      - inclinometers and extensometers
+      - piezometers and pore pressure
+      - distributed fiber optic sensing
+      - GNSS and total stations
+      - sensor fusion
+      - anomaly and change detection
+      - early warning systems
+
+  - id: geophysics
+    name: Инженерная и прикладная геофизика
+    weight: 0.9
+    description: Неинвазивное исследование строения и динамики геологической среды.
+    terms:
+      - near-surface geophysics
+      - engineering geophysics
+      - seismic tomography
+      - electrical resistivity tomography
+      - ground penetrating radar
+      - георадар
+      - сейсморазведка
+      - электроразведка
+    subtopics:
+      - seismic methods
+      - ERT and induced polarization
+      - GPR
+      - microseismic monitoring
+      - passive seismic
+      - joint inversion
+      - full waveform inversion
+
+  - id: remote_sensing
+    name: Дистанционное зондирование и геодезический мониторинг
+    weight: 0.9
+    description: Спутниковые, воздушные и наземные наблюдения за поверхностью.
+    terms:
+      - remote sensing
+      - earth observation
+      - InSAR
+      - LiDAR
+      - photogrammetry
+      - UAV mapping
+      - дистанционное зондирование
+      - интерферометрия
+    subtopics:
+      - SAR interferometry
+      - optical change detection
+      - point clouds
+      - digital elevation models
+      - UAV inspection
+      - multispectral and hyperspectral sensing
+
+  - id: hydrogeology
+    name: Гидрогеология и гидрогеомеханика
+    weight: 0.8
+    description: Подземные воды и их влияние на грунты, породы и сооружения.
+    terms:
+      - hydrogeology
+      - groundwater
+      - seepage
+      - poromechanics
+      - groundwater modelling
+      - гидрогеология
+      - фильтрация
+      - поровое давление
+    subtopics:
+      - groundwater flow
+      - coupled hydro-mechanical modelling
+      - dewatering
+      - contaminant transport
+      - aquifer characterization
+
+  - id: geospatial_systems
+    name: Геоинформатика, GIS и пространственные данные
+    weight: 0.75
+    description: Пространственная аналитика и инфраструктура геоданных.
+    terms:
+      - geospatial
+      - GIS
+      - spatial database
+      - spatial analysis
+      - геоинформационные системы
+      - пространственные данные
+    subtopics:
+      - spatial data infrastructure
+      - 3D geological modelling
+      - spatial statistics
+      - web GIS
+      - geospatial knowledge graphs
+
+  - id: ai_for_geoscience
+    name: AI/ML для геонаук и геотехники
+    weight: 1.0
+    description: Методы машинного обучения с доказанной пользой для геоданных и инженерных задач.
+    terms:
+      - geoscience machine learning
+      - geotechnical AI
+      - GeoAI
+      - machine learning for geosciences
+      - foundation model
+      - машинное обучение в геотехнике
+    subtopics:
+      - multimodal learning
+      - time-series forecasting
+      - graph neural networks
+      - computer vision
+      - self-supervised learning
+      - transfer and domain adaptation
+      - active learning
+      - retrieval augmented generation
+
+  - id: physics_informed_ai
+    name: Физически информированный AI и гибридные модели
+    weight: 1.0
+    description: Совмещение физических законов, численного моделирования и обучения по данным.
+    terms:
+      - physics-informed machine learning
+      - PINN
+      - neural operator
+      - hybrid modelling
+      - differentiable simulation
+      - surrogate model
+      - физически информированные нейронные сети
+    subtopics:
+      - physics-informed neural networks
+      - neural operators
+      - constitutive model discovery
+      - differentiable finite elements
+      - reduced-order and surrogate models
+      - inverse problems
+
+  - id: uncertainty_and_risk
+    name: Неопределённость, надёжность и риск
+    weight: 0.95
+    description: Количественная оценка доверия к данным, моделям и инженерным решениям.
+    terms:
+      - uncertainty quantification
+      - reliability analysis
+      - probabilistic geotechnics
+      - Bayesian inversion
+      - risk assessment
+      - оценка неопределённости
+      - теория надёжности
+    subtopics:
+      - Bayesian methods
+      - probabilistic modelling
+      - sensitivity analysis
+      - calibration
+      - out-of-distribution detection
+      - explainability
+
+  - id: digital_twins
+    name: Цифровые двойники и управление жизненным циклом
+    weight: 0.9
+    description: Связь моделей, мониторинга и инженерных решений в реальном времени.
+    terms:
+      - digital twin
+      - digital thread
+      - asset management
+      - predictive maintenance
+      - цифровой двойник
+      - информационное моделирование
+    subtopics:
+      - real-time model updating
+      - BIM and GIS integration
+      - predictive maintenance
+      - decision support
+      - data assimilation
+
+cross_cutting_priorities:
+  - id: reproducibility
+    name: Воспроизводимость и открытая наука
+    weight: 1.0
+    terms: [open source, open data, reproducible research, benchmark]
+  - id: field_validation
+    name: Натурная и промышленная валидация
+    weight: 1.0
+    terms: [field study, case study, real-world deployment, production]
+  - id: data_quality
+    name: Качество и происхождение данных
+    weight: 0.9
+    terms: [data quality, provenance, label quality, data leakage]
+  - id: operational_readiness
+    name: Готовность к инженерному применению
+    weight: 0.9
+    terms: [latency, robustness, scalability, deployment, MLOps]
+
+ranking:
+  score_range: [0, 10]
+  weights:
+    relevance: 0.30
+    novelty: 0.20
+    scientific_quality: 0.15
+    practical_value: 0.20
+    importance_for_ai: 0.15
+  deep_analysis_prompts:
+    - В чём научная новизна относительно сильных baseline?
+    - Какие данные использованы и есть ли риск утечки?
+    - Согласуются ли выводы с физикой процесса?
+    - Каковы ограничения и область применимости?
+    - Как перенести метод в геотехническую практику?
+    - Доступны ли код, веса и датасет?

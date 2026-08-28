@@ -1,0 +1,69 @@
+[project]
+name = "geonexa-proxima"
+version = "0.1.0"
+description = "Персональный AI-радар научных работ и геотехнологий"
+authors = [{ name = "GeoNexa Proxima Team" }]
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "aiogram",
+    "alembic",
+    "asyncpg",
+    "fastapi",
+    "httpx",
+    "prefect",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "pyyaml",
+    "qdrant-client",
+    "rapidfuzz",
+    "sqlalchemy",
+    "structlog",
+    "typer",
+    "uvicorn",
+]
+
+[project.scripts]
+geonexa = "geonexa_proxima.cli:app"
+
+[tool.poetry]
+packages = [{ include = "geonexa_proxima", from = "src" }]
+
+[tool.poetry.group.ml]
+optional = true
+
+[tool.poetry.group.ml.dependencies]
+accelerate = "*"
+sentence-transformers = "*"
+torch = "*"
+transformers = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+pytest-asyncio = "*"
+pytest-cov = "*"
+respx = "*"
+ruff = "*"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF001"]
+
+[tool.ruff.format]
+quote-style = "double"

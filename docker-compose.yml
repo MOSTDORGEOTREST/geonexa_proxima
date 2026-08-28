@@ -1,0 +1,97 @@
+name: geonexa-proxima
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geonexa}
+      POSTGRES_USER: ${POSTGRES_USER:-geonexa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend
+
+  api:
+    profiles: ["api"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-geonexa}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-geonexa}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-geonexa_items}
+      QDRANT_PROFILE_COLLECTION: ${QDRANT_PROFILE_COLLECTION:-geonexa_profiles}
+      EMBEDDING_MODE: ${EMBEDDING_MODE:-api}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B}
+      EMBEDDING_API_BASE_URL: ${EMBEDDING_API_BASE_URL:-http://host.docker.internal:8001/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-replace-me}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-2560}
+      RERANKER_MODE: ${RERANKER_MODE:-api}
+      RERANKER_MODEL: ${RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      RERANKER_API_URL: ${RERANKER_API_URL:-http://host.docker.internal:8002/rerank}
+      RERANKER_API_KEY: ${RERANKER_API_KEY:-replace-me}
+      LIGHT_LLM_BASE_URL: ${LIGHT_LLM_BASE_URL:-https://api.openai.com/v1}
+      LIGHT_LLM_API_KEY: ${LIGHT_LLM_API_KEY:-replace-me}
+      LIGHT_LLM_MODEL: ${LIGHT_LLM_MODEL:-gpt-4.1-mini}
+      HEAVY_LLM_BASE_URL: ${HEAVY_LLM_BASE_URL:-https://api.openai.com/v1}
+      HEAVY_LLM_API_KEY: ${HEAVY_LLM_API_KEY:-replace-me}
+      HEAVY_LLM_MODEL: ${HEAVY_LLM_MODEL:-gpt-5}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace-me}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TAXONOMY_PATH: /app/config/taxonomy.yaml
+      PERSONALIZATION_CANDIDATE_LIMIT: ${PERSONALIZATION_CANDIDATE_LIMIT:-100}
+      PERSONAL_SEMANTIC_WEIGHT: ${PERSONAL_SEMANTIC_WEIGHT:-0.40}
+      PERSONAL_RERANKER_WEIGHT: ${PERSONAL_RERANKER_WEIGHT:-0.25}
+      PERSONAL_GLOBAL_WEIGHT: ${PERSONAL_GLOBAL_WEIGHT:-0.25}
+      PERSONAL_INTEREST_WEIGHT: ${PERSONAL_INTEREST_WEIGHT:-0.10}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - backend
+
+volumes:
+  postgres_data:
+  qdrant_data:
+
+networks:
+  backend:
+    driver: bridge
