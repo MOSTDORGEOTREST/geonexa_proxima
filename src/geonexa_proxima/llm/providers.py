@@ -192,19 +192,26 @@ class LLMProviders:
         await self.heavy_client.aclose()
 
 
+def _client(settings: Settings, *, heavy: bool) -> OpenAICompatibleJSONClient:
+    """Собрать клиент из настроек.
+
+    Раньше параметры перечислялись в четырёх местах, и `LLM_MAX_RETRIES`
+    не попал ни в одно из них: настройка была, а повторов при 429 и 5xx
+    столько, сколько зашито в базовом классе.
+    """
+
+    return OpenAICompatibleJSONClient(
+        base_url=settings.heavy_llm_base_url if heavy else settings.light_llm_base_url,
+        api_key=settings.llm_api_key(heavy=heavy),
+        model=settings.heavy_llm_model if heavy else settings.light_llm_model,
+        timeout=settings.llm_timeout_seconds,
+        retries=settings.llm_max_retries,
+    )
+
+
 def create_llm_providers(settings: Settings) -> LLMProviders:
-    light = OpenAICompatibleJSONClient(
-        base_url=settings.light_llm_base_url,
-        api_key=settings.light_llm_api_key.get_secret_value(),
-        model=settings.light_llm_model,
-        timeout=settings.llm_timeout_seconds,
-    )
-    heavy = OpenAICompatibleJSONClient(
-        base_url=settings.heavy_llm_base_url,
-        api_key=settings.heavy_llm_api_key.get_secret_value(),
-        model=settings.heavy_llm_model,
-        timeout=settings.llm_timeout_seconds,
-    )
+    light = _client(settings, heavy=False)
+    heavy = _client(settings, heavy=True)
     return LLMProviders(
         ranker=LLMRanker(light),
         analyzer=LLMAnalyzer(heavy),
@@ -216,47 +223,19 @@ def create_llm_providers(settings: Settings) -> LLMProviders:
 
 
 def create_ranker(settings: Settings) -> LLMRanker:
-    return LLMRanker(
-        OpenAICompatibleJSONClient(
-            base_url=settings.light_llm_base_url,
-            api_key=settings.light_llm_api_key.get_secret_value(),
-            model=settings.light_llm_model,
-            timeout=settings.llm_timeout_seconds,
-        )
-    )
+    return LLMRanker(_client(settings, heavy=False))
 
 
 def create_analyzer(settings: Settings) -> LLMAnalyzer:
-    return LLMAnalyzer(
-        OpenAICompatibleJSONClient(
-            base_url=settings.heavy_llm_base_url,
-            api_key=settings.heavy_llm_api_key.get_secret_value(),
-            model=settings.heavy_llm_model,
-            timeout=settings.llm_timeout_seconds,
-        )
-    )
+    return LLMAnalyzer(_client(settings, heavy=True))
 
 
 def create_personalizer(settings: Settings) -> LLMProfileExplainer:
-    return LLMProfileExplainer(
-        OpenAICompatibleJSONClient(
-            base_url=settings.light_llm_base_url,
-            api_key=settings.light_llm_api_key.get_secret_value(),
-            model=settings.light_llm_model,
-            timeout=settings.llm_timeout_seconds,
-        )
-    )
+    return LLMProfileExplainer(_client(settings, heavy=False))
 
 
 def create_deep_personalizer(settings: Settings) -> LLMProfileExplainer:
-    return LLMProfileExplainer(
-        OpenAICompatibleJSONClient(
-            base_url=settings.heavy_llm_base_url,
-            api_key=settings.heavy_llm_api_key.get_secret_value(),
-            model=settings.heavy_llm_model,
-            timeout=settings.llm_timeout_seconds,
-        )
-    )
+    return LLMProfileExplainer(_client(settings, heavy=True))
 
 
 def _response_content(payload: object) -> str:

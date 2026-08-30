@@ -98,14 +98,6 @@ class ItemRepository(Protocol):
 
     async def get(self, item_id: UUID) -> StoredItem | None: ...
 
-    async def save_feedback(
-        self,
-        external_user_id: int,
-        item_id: UUID,
-        kind: FeedbackKind,
-        context: dict[str, object] | None = None,
-    ) -> None: ...
-
 
 class UserProfileRepository(Protocol):
     async def get_or_register(self, identity: TelegramIdentity) -> tuple[User, bool]: ...

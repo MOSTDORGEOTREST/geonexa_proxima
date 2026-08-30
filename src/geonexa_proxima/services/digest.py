@@ -1,4 +1,8 @@
-"""Digest selection and Telegram-safe formatting."""
+"""Отбор материалов в дайджест и безопасная для Telegram вёрстка.
+
+Весь текст здесь читает человек, поэтому он на русском: этот форматтер
+используют и бот по команде, и воркер плановой рассылки.
+"""
 
 from __future__ import annotations
 
@@ -18,14 +22,14 @@ class DigestFormatter:
     def __init__(self, *, max_message_length: int = 3900) -> None:
         self.max_message_length = max_message_length
 
-    def format(self, items: Sequence[StoredItem], *, heading: str = "GeoNexa digest") -> list[str]:
+    def format(self, items: Sequence[StoredItem], *, heading: str = "Дайджест") -> list[str]:
         if not items:
-            return [f"<b>{escape(heading)}</b>\n\nNo matching items yet."]
+            return [f"<b>{escape(heading)}</b>\n\nПодходящих материалов нет."]
         groups = {
-            ItemKind.PAPER: "Papers",
-            ItemKind.METHOD: "Methods",
-            ItemKind.SOFTWARE: "Tools",
-            ItemKind.DATASET: "Datasets",
+            ItemKind.PAPER: "Статьи",
+            ItemKind.METHOD: "Методы",
+            ItemKind.SOFTWARE: "Инструменты",
+            ItemKind.DATASET: "Данные",
         }
         blocks: list[str] = [f"<b>{escape(heading)}</b>"]
         for kind, label in groups.items():
@@ -37,14 +41,14 @@ class DigestFormatter:
         return self._chunk(blocks)
 
     def format_item(self, item: StoredItem) -> str:
-        score = f"{item.rank.total_score:.1f}/10" if item.rank else "unranked"
+        score = f"{item.rank.total_score:.1f}/10" if item.rank else "без оценки"
         title = escape(item.title[:500])
         title_line = (
             f'<a href="{escape(item.canonical_url, quote=True)}">{title}</a>'
             if item.canonical_url
             else f"<b>{title}</b>"
         )
-        details = [f"Score: {score}"]
+        details = [f"Оценка: {score}"]
         if item.rank:
             details.append(escape(item.rank.reason[:500]))
         if item.analysis:
@@ -53,7 +57,7 @@ class DigestFormatter:
 
     def format_personalized_item(self, candidate: PersonalizedItem) -> str:
         base = self.format_item(candidate.item)
-        details = [f"<b>Personal score: {candidate.personal_score * 10:.1f}/10</b>"]
+        details = [f"<b>Персональная оценка: {candidate.personal_score * 10:.1f}/10</b>"]
         if candidate.explanation:
             details.append(escape(candidate.explanation[:700]))
         return base + "\n" + "\n".join(details)
@@ -89,7 +93,7 @@ class DigestBuilder:
         *,
         minimum_score: float,
         limit: int = 20,
-        heading: str = "GeoNexa digest",
+        heading: str = "Дайджест",
         kinds: set[ItemKind] | None = None,
         since: datetime | None = None,
     ) -> list[str]:
@@ -122,7 +126,7 @@ class DigestBuilder:
         minimum_global_score: float = 0,
     ) -> list[PersonalizedItem]:
         if self.personalization is None:
-            raise RuntimeError("Personalization service is not configured")
+            raise RuntimeError("Сервис персонализации не настроен")
         return await self.personalization.rank(
             profile,
             limit=limit,

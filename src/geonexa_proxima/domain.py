@@ -6,7 +6,25 @@ from datetime import date, datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, computed_field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    computed_field,
+    model_validator,
+)
+
+
+class NotFoundError(LookupError):
+    """Запрошенной записи не существует.
+
+    Отдельный базовый класс, а не голый ``LookupError``: в API на него навешан
+    обработчик, отдающий 404. Ловить сам ``LookupError`` там нельзя — ``KeyError``
+    и ``IndexError`` его наследуют, и настоящая ошибка в коде превратилась бы в
+    вежливое «не найдено» вместо пятисотки, которую нужно чинить.
+    """
 
 
 class ItemKind(StrEnum):
@@ -33,10 +51,54 @@ class FeedbackKind(StrEnum):
     DEEPER = "deeper"
 
 
+class SubscriberKind(StrEnum):
+    """Человек, группа или канал — всё это подписчики со своим профилем."""
+
+    USER = "user"
+    GROUP = "group"
+    CHANNEL = "channel"
+
+
 class UserStatus(StrEnum):
+    PENDING = "pending"
     ACTIVE = "active"
-    INACTIVE = "inactive"
+    PAUSED = "paused"
     BLOCKED = "blocked"
+    LEFT = "left"
+
+
+class BotStatus(StrEnum):
+    """Статус бота в чате — словарь Telegram Bot API, не наш."""
+
+    CREATOR = "creator"
+    ADMINISTRATOR = "administrator"
+    MEMBER = "member"
+    RESTRICTED = "restricted"
+    LEFT = "left"
+    KICKED = "kicked"
+
+
+#: Группировки видов подписчика. Живут рядом с перечислением, а не в трёх
+#: модулях по копии: репозиторий, диспетчер и схема должны понимать «личка» и
+#: «чат» одинаково, иначе рассылка уедет не туда молча.
+PERSONAL_KINDS: tuple[str, ...] = (SubscriberKind.USER.value,)
+CHAT_KINDS: tuple[str, ...] = (SubscriberKind.GROUP.value, SubscriberKind.CHANNEL.value)
+ALL_KINDS: tuple[str, ...] = tuple(kind.value for kind in SubscriberKind)
+
+#: Статусы, при которых бот ещё в чате и может писать...
+PRESENT_BOT_STATUSES: tuple[str, ...] = (
+    BotStatus.CREATOR.value,
+    BotStatus.ADMINISTRATOR.value,
+    BotStatus.MEMBER.value,
+)
+#: ...и при которых чат для нас потерян.
+ABSENT_BOT_STATUSES: tuple[str, ...] = (BotStatus.LEFT.value, BotStatus.KICKED.value)
+
+
+def sql_literals(values: tuple[str, ...]) -> str:
+    """Собрать список литералов для CHECK-ограничения из того же источника."""
+
+    return ", ".join(f"'{value}'" for value in values)
 
 
 class InterestPolarity(StrEnum):
@@ -57,14 +119,20 @@ class TelegramIdentity(BaseModel):
 
 
 class User(BaseModel):
+    """Подписчик: личный чат, группа или канал."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    external_user_id: int
+    kind: SubscriberKind = SubscriberKind.USER
+    telegram_chat_id: int
+    telegram_user_id: int | None = None
     telegram_username: str | None = None
-    display_name: str | None = None
+    title: str | None = None
     language_code: str | None = None
     status: UserStatus = UserStatus.ACTIVE
+    is_owner: bool = False
+    timezone: str = "Europe/Moscow"
     last_seen_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -72,14 +140,24 @@ class User(BaseModel):
     @computed_field
     @property
     def telegram_id(self) -> int:
-        return self.external_user_id
+        """Куда слать сообщение — chat_id, а не user_id."""
+
+        return self.telegram_chat_id
+
+    @computed_field
+    @property
+    def is_chat(self) -> bool:
+        return self.kind is not SubscriberKind.USER
 
 
 class UserProfile(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
-    user_id: UUID
+    # В БД колонка называется subscriber_id: профиль может принадлежать
+    # человеку, группе или каналу. В домене имя оставлено прежним, чтобы не
+    # переписывать бота и сервисы; связывает их алиас.
+    user_id: UUID = Field(validation_alias=AliasChoices("user_id", "subscriber_id"))
     name: str
     normalized_name: str
     description: str | None = None

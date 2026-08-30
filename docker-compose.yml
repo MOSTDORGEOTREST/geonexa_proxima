@@ -1,97 +1,170 @@
+# Production-стек Проксимы.
+#
+# Отличия от docker-compose.dev.yml:
+#   * база внешняя (управляемый PostgreSQL) — контейнера postgres здесь нет;
+#   * TLS до базы обязателен, режим и корневой сертификат задаются в .env;
+#   * рассылка настоящая: DELIVERY_DRY_RUN по умолчанию выключен;
+#   * наружу торчит только админка; API и Prefect живут во внутренней сети.
+#
+#   docker compose up -d --build
+#   docker compose logs -f api
+#
+# Перед первым запуском: cp .env.example .env и заполнить секреты.
+# Схему создавать руками не нужно — сервис поднимет её сам (DB_AUTO_MIGRATE).
+
 name: geonexa-proxima
 
+x-app-env: &app-env
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: ${LOG_JSON:-true}
+  TIMEZONE: ${TIMEZONE:-Europe/Moscow}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Задай PUBLIC_BASE_URL — из него собирается вебхук}
+
+  DATABASE_URL: ${DATABASE_URL:?Задай DATABASE_URL}
+  DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-verify-full}
+  DATABASE_SSL_ROOT_CERT: ${DATABASE_SSL_ROOT_CERT:-/app/certs/root.crt}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-2}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-0}
+  DB_CONNECTION_BUDGET: ${DB_CONNECTION_BUDGET:-2}
+  DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-15}
+  DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+  DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-10}
+  DB_COMMAND_TIMEOUT: ${DB_COMMAND_TIMEOUT:-30}
+  DB_AUTO_MIGRATE: ${DB_AUTO_MIGRATE:-true}
+  DB_AUTO_SEED: ${DB_AUTO_SEED:-true}
+
+  VECTOR_BACKEND: pgvector
+  VECTOR_COLUMN_TYPE: ${VECTOR_COLUMN_TYPE:-vector}
+  VECTOR_INDEX_KIND: ${VECTOR_INDEX_KIND:-hnsw}
+  MODELS_ROOT: /app/models
+  EMBEDDING_MODE: ${EMBEDDING_MODE:-local}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+  RERANKER_MODE: ${RERANKER_MODE:-local}
+
+  PREFECT_API_URL: http://prefect-server:4200/api
+  PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-geonexa-pool}
+
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Задай TELEGRAM_BOT_TOKEN}
+  TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+  TELEGRAM_OWNER_IDS: ${TELEGRAM_OWNER_IDS:-}
+  TELEGRAM_REGISTRATION_MODE: ${TELEGRAM_REGISTRATION_MODE:-allowlist}
+  TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+  TELEGRAM_ALLOW_GROUP_CHATS: ${TELEGRAM_ALLOW_GROUP_CHATS:-true}
+  TELEGRAM_AUTO_REGISTER_CHATS: ${TELEGRAM_AUTO_REGISTER_CHATS:-true}
+  DELIVERY_DRY_RUN: ${DELIVERY_DRY_RUN:-false}
+
+  LIGHT_LLM_BASE_URL: ${LIGHT_LLM_BASE_URL:-https://api.deepseek.com/v1}
+  LIGHT_LLM_MODEL: ${LIGHT_LLM_MODEL:-deepseek-v4-flash}
+  LIGHT_LLM_API_KEY: ${LIGHT_LLM_API_KEY:-}
+  HEAVY_LLM_BASE_URL: ${HEAVY_LLM_BASE_URL:-https://api.deepseek.com/v1}
+  HEAVY_LLM_MODEL: ${HEAVY_LLM_MODEL:-deepseek-v4-flash}
+  HEAVY_LLM_API_KEY: ${HEAVY_LLM_API_KEY:-}
+  DEFAULT_LLM_API_KEY: ${DEFAULT_LLM_API_KEY:-}
+
+  ADMIN_USERNAME: ${ADMIN_USERNAME:?Задай ADMIN_USERNAME}
+  ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?Задай ADMIN_JWT_SECRET}
+  # ADMIN_PASSWORD_HASH намеренно НЕ перечислен здесь и приходит через env_file.
+  # Значения в блоке environment проходят подстановку переменных, а argon2-хеш
+  # состоит из долларов ($argon2id$v=19$m=…) — compose съел бы его по частям.
+  # Отсутствие plaintext-пароля в production проверяет сам сервис на старте.
+
+x-app-build: &app-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  # Веса не в образе: том только на чтение, чтобы контейнер их не переписал.
+  volumes:
+    - ./models:/app/models:ro
+    - ./config:/app/config:ro
+    - ${DATABASE_SSL_ROOT_CERT_HOST:-./certs}:/app/certs:ro
+  env_file:
+    - .env
+
 services:
-  postgres:
-    image: postgres:16
+  # Метаданные Prefect. Управляемая база выдана одна, а Prefect требует свою.
+  prefect-postgres:
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-geonexa}
-      POSTGRES_USER: ${POSTGRES_USER:-geonexa}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      POSTGRES_DB: ${PREFECT_POSTGRES_DB:-prefect}
+      POSTGRES_USER: ${PREFECT_POSTGRES_USER:-prefect}
+      POSTGRES_PASSWORD: ${PREFECT_POSTGRES_PASSWORD:?Задай PREFECT_POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - prefect_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${PREFECT_POSTGRES_USER:-prefect}"]
+      interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 10s
-    networks:
-      - backend
 
-  qdrant:
-    image: qdrant/qdrant:latest
+  prefect-server:
+    image: prefecthq/prefect:3-latest
     restart: unless-stopped
-    ports:
-      - "${QDRANT_HTTP_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${PREFECT_POSTGRES_USER:-prefect}:${PREFECT_POSTGRES_PASSWORD}@prefect-postgres:5432/${PREFECT_POSTGRES_DB:-prefect}
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+    depends_on:
+      prefect-postgres:
+        condition: service_healthy
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1",
-        ]
-      interval: 5s
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:4200/api/health')\""]
+      interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 10s
-    networks:
-      - backend
+      start_period: 30s
 
   api:
-    profiles: ["api"]
+    <<: *app-build
+    command: ["api"]
+    environment:
+      <<: *app-env
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  bot:
+    <<: *app-build
+    command: ["bot"]
+    environment:
+      <<: *app-env
+    depends_on:
+      api:
+        condition: service_healthy
+
+  prefect-worker:
+    <<: *app-build
+    command: ["worker"]
+    environment:
+      <<: *app-env
+    depends_on:
+      api:
+        condition: service_healthy
+      prefect-server:
+        condition: service_healthy
+
+  admin-ui:
     build:
-      context: .
+      context: ./admin-ui
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-geonexa}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-geonexa}
-      QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-geonexa_items}
-      QDRANT_PROFILE_COLLECTION: ${QDRANT_PROFILE_COLLECTION:-geonexa_profiles}
-      EMBEDDING_MODE: ${EMBEDDING_MODE:-api}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B}
-      EMBEDDING_API_BASE_URL: ${EMBEDDING_API_BASE_URL:-http://host.docker.internal:8001/v1}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-replace-me}
-      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-2560}
-      RERANKER_MODE: ${RERANKER_MODE:-api}
-      RERANKER_MODEL: ${RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
-      RERANKER_API_URL: ${RERANKER_API_URL:-http://host.docker.internal:8002/rerank}
-      RERANKER_API_KEY: ${RERANKER_API_KEY:-replace-me}
-      LIGHT_LLM_BASE_URL: ${LIGHT_LLM_BASE_URL:-https://api.openai.com/v1}
-      LIGHT_LLM_API_KEY: ${LIGHT_LLM_API_KEY:-replace-me}
-      LIGHT_LLM_MODEL: ${LIGHT_LLM_MODEL:-gpt-4.1-mini}
-      HEAVY_LLM_BASE_URL: ${HEAVY_LLM_BASE_URL:-https://api.openai.com/v1}
-      HEAVY_LLM_API_KEY: ${HEAVY_LLM_API_KEY:-replace-me}
-      HEAVY_LLM_MODEL: ${HEAVY_LLM_MODEL:-gpt-5}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace-me}
-      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
-      TAXONOMY_PATH: /app/config/taxonomy.yaml
-      PERSONALIZATION_CANDIDATE_LIMIT: ${PERSONALIZATION_CANDIDATE_LIMIT:-100}
-      PERSONAL_SEMANTIC_WEIGHT: ${PERSONAL_SEMANTIC_WEIGHT:-0.40}
-      PERSONAL_RERANKER_WEIGHT: ${PERSONAL_RERANKER_WEIGHT:-0.25}
-      PERSONAL_GLOBAL_WEIGHT: ${PERSONAL_GLOBAL_WEIGHT:-0.25}
-      PERSONAL_INTEREST_WEIGHT: ${PERSONAL_INTEREST_WEIGHT:-0.10}
+      NODE_ENV: production
+      # ORIGIN обязателен: без него SvelteKit отвергает POST-формы как CSRF.
+      ORIGIN: ${ADMIN_ORIGIN:?Задай ADMIN_ORIGIN — внешний адрес админки}
+      API_INTERNAL_URL: http://api:8000
     ports:
-      - "${API_PORT:-8000}:8000"
+      # Наружу торчит только админка; API и Prefect остаются внутри сети.
+      - "${ADMIN_UI_PORT:-3000}:3000"
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    networks:
-      - backend
 
 volumes:
-  postgres_data:
-  qdrant_data:
-
-networks:
-  backend:
-    driver: bridge
+  prefect_postgres:

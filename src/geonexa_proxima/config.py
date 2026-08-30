@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, get_args
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from geonexa_proxima.tls import SSLMode
 
 
 class ProviderMode(StrEnum):
@@ -22,82 +25,437 @@ class Environment(StrEnum):
     PRODUCTION = "production"
 
 
+class VectorBackend(StrEnum):
+    PGVECTOR = "pgvector"
+    QDRANT = "qdrant"
+
+
+class VectorColumnType(StrEnum):
+    """Тип колонки pgvector. halfvec появился в pgvector 0.7."""
+
+    VECTOR = "vector"
+    HALFVEC = "halfvec"
+
+
+class VectorIndexKind(StrEnum):
+    HNSW = "hnsw"
+    IVFFLAT = "ivfflat"
+    NONE = "none"
+
+
+class RegistrationMode(StrEnum):
+    OPEN = "open"
+    ALLOWLIST = "allowlist"
+    INVITE = "invite"
+
+
+class ReasoningEffort(StrEnum):
+    NONE = "none"
+    LOW = "low"
+    HIGH = "high"
+    MAX = "max"
+
+
+# Нативные размерности семейства Qwen3-Embedding. Matryoshka режет только вниз:
+# запросить у модели больше её скрытого размера невозможно.
+NATIVE_EMBEDDING_DIMENSIONS: dict[str, int] = {
+    "qwen3-embedding-0.6b": 1024,
+    "qwen3-embedding-4b": 2560,
+    "qwen3-embedding-8b": 4096,
+}
+
+# Потолки индексов pgvector: HNSW и IVFFlat на vector — 2000 измерений,
+# HNSW на halfvec — 4000. Сам тип vector хранит до 16000, но без индекса.
+PGVECTOR_INDEX_LIMITS: dict[tuple[VectorColumnType, VectorIndexKind], int] = {
+    (VectorColumnType.VECTOR, VectorIndexKind.HNSW): 2000,
+    (VectorColumnType.VECTOR, VectorIndexKind.IVFFLAT): 2000,
+    (VectorColumnType.HALFVEC, VectorIndexKind.HNSW): 4000,
+    (VectorColumnType.HALFVEC, VectorIndexKind.IVFFLAT): 4000,
+}
+
+DEFAULT_QUERY_INSTRUCTION = (
+    "Given a research profile in geotechnics, engineering geology and machine "
+    "learning, retrieve scientific papers, methods, software and datasets that "
+    "match this profile"
+)
+
+
+def _native_dimensions(model: str) -> int | None:
+    """Определить нативную размерность по идентификатору модели."""
+
+    name = model.strip().lower().rsplit("/", 1)[-1]
+    return NATIVE_EMBEDDING_DIMENSIONS.get(name)
+
+
 class Settings(BaseSettings):
     """Настройки считываются только здесь; остальные модули получают Settings явно."""
 
+    # GEONEXA_ENV_FILE переопределяет файл настроек. Нужен там, где ".env"
+    # рядом с рабочим каталогом — не тот файл: тесты, отдельный стенд,
+    # разбор чужого окружения.
     model_config = SettingsConfigDict(
-        env_file=(".env",),
+        env_file=(os.getenv("GEONEXA_ENV_FILE") or ".env",),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
 
+    # --- приложение ---------------------------------------------------------
     app_name: str = "GeoNexa Proxima"
     environment: Environment = Environment.DEVELOPMENT
     log_level: str = "INFO"
+    # В контейнере логи собирает не человек, а сборщик: JSON по умолчанию
+    # включается для production в валидаторе ниже.
+    log_json: bool | None = None
     timezone: str = "Europe/Moscow"
+    public_base_url: str = "http://localhost:8000"
 
+    # --- база данных --------------------------------------------------------
     database_url: str = "postgresql+asyncpg://geonexa:change-me@localhost:5432/geonexa"
+    database_ssl_mode: SSLMode = SSLMode.PREFER
+    database_ssl_root_cert: Path | None = None
+    database_statement_timeout_ms: int = Field(default=30_000, ge=0)
+
+    # Пул под управляемую БД: у неё жёсткий max_connections, общий на все
+    # процессы платформы. Значения намеренно маленькие — ждать соединение
+    # пятнадцать секунд лучше, чем получить отказ сервера.
+    db_pool_size: int = Field(default=2, ge=1, le=50)
+    db_max_overflow: int = Field(default=0, ge=0, le=50)
+    db_connection_budget: int = Field(default=2, ge=1, le=100)
+    db_pool_timeout: int = Field(default=15, ge=1, le=300)
+    db_pool_recycle: int = Field(default=1800, ge=60, le=86_400)
+    db_connect_timeout: float = Field(default=10, gt=0, le=120)
+    db_command_timeout: float = Field(default=30, gt=0, le=600)
+    db_application_name: str = "geonexa-proxima"
+    # Подъём на чистой базе. В dev включено, в production миграции обычно
+    # катят отдельным шагом деплоя — тогда DB_AUTO_MIGRATE=false и сервис
+    # просто откажется стартовать против несовпадающей схемы.
+    db_auto_migrate: bool = True
+    db_auto_seed: bool = True
+    db_wait_attempts: int = Field(default=30, ge=1, le=300)
+    db_wait_delay_seconds: float = Field(default=2.0, gt=0, le=60)
+
+    # --- векторное хранилище ------------------------------------------------
+    vector_backend: VectorBackend = VectorBackend.PGVECTOR
+    vector_column_type: VectorColumnType = VectorColumnType.VECTOR
+    vector_index_kind: VectorIndexKind = VectorIndexKind.HNSW
+    vector_hnsw_m: int = Field(default=16, ge=2, le=100)
+    vector_hnsw_ef_construction: int = Field(default=64, ge=4, le=1000)
+    vector_hnsw_ef_search: int = Field(default=80, ge=1, le=1000)
+    vector_ivfflat_lists: int = Field(default=100, ge=1, le=32_768)
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr | None = None
     qdrant_collection: str = "geonexa_items"
     qdrant_profile_collection: str = "geonexa_profiles"
 
-    embedding_mode: ProviderMode = ProviderMode.API
-    embedding_local_path: Path = Path("models/Qwen3-Embedding-4B")
-    embedding_model: str = "Qwen/Qwen3-Embedding-4B"
+    # --- Prefect ------------------------------------------------------------
+    prefect_api_url: str = "http://localhost:4200/api"
+    prefect_api_key: SecretStr | None = None
+    prefect_work_pool: str = "geonexa-pool"
+    prefect_work_queue: str = "default"
+    prefect_api_database_connection_url: str | None = None
+    schedule_global_harvest_cron: str = "0 3 * * *"
+    schedule_digest_dispatch_cron: str = "0 7 * * 1"
+    schedule_digest_dispatch_chats_cron: str = "30 7 * * 1"
+    schedule_delivery_personal_cron: str = "*/5 * * * *"
+    schedule_delivery_group_cron: str = "*/5 * * * *"
+    schedule_chat_monitor_cron: str = "0 */6 * * *"
+    schedule_maintenance_cron: str = "30 4 * * *"
+    schedule_subscription_maintenance_cron: str = "0 5 * * *"
+
+    # --- админка ------------------------------------------------------------
+    admin_username: str = "admin"
+    admin_password: SecretStr | None = None
+    admin_password_hash: str | None = None
+    admin_jwt_secret: SecretStr = SecretStr("change-me-in-production")
+    admin_jwt_ttl_minutes: int = Field(default=720, ge=5, le=10_080)
+    admin_refresh_ttl_days: int = Field(default=14, ge=1, le=365)
+    admin_cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    admin_login_rate_limit_per_minute: int = Field(default=5, ge=1, le=100)
+    secret_encryption_key: SecretStr | None = None
+
+    # --- LLM ----------------------------------------------------------------
+    default_llm_provider_key: str = "deepseek"
+    default_llm_base_url: str = "https://api.deepseek.com/v1"
+    default_llm_api_key: SecretStr = SecretStr("test-key")
+
+    light_llm_base_url: str = "https://api.deepseek.com/v1"
+    light_llm_api_key: SecretStr = SecretStr("test-key")
+    light_llm_model: str = "deepseek-v4-flash"
+    light_llm_reasoning_effort: ReasoningEffort = ReasoningEffort.LOW
+    light_llm_temperature: float = Field(default=0.1, ge=0, le=2)
+    light_llm_max_tokens: int = Field(default=2048, ge=1)
+    light_llm_json_mode: bool = True
+    light_llm_concurrency: int = Field(default=8, ge=1, le=64)
+
+    heavy_llm_base_url: str = "https://api.deepseek.com/v1"
+    heavy_llm_api_key: SecretStr = SecretStr("test-key")
+    heavy_llm_model: str = "deepseek-v4-flash"
+    heavy_llm_reasoning_effort: ReasoningEffort = ReasoningEffort.HIGH
+    heavy_llm_temperature: float = Field(default=0.2, ge=0, le=2)
+    heavy_llm_max_tokens: int = Field(default=8192, ge=1)
+    heavy_llm_json_mode: bool = True
+    heavy_llm_concurrency: int = Field(default=2, ge=1, le=64)
+
+    llm_timeout_seconds: float = Field(default=180, gt=0)
+    llm_max_retries: int = Field(default=3, ge=0, le=10)
+    llm_log_calls: bool = True
+    llm_daily_token_budget: int = Field(default=0, ge=0)
+
+    # --- embeddings ---------------------------------------------------------
+    embedding_mode: ProviderMode = ProviderMode.LOCAL
+    # Каталог с весами. Точное имя подкаталога не важно: веса ищутся по
+    # содержимому, иначе каждая перекачка ломала бы конфигурацию.
+    models_root: Path = Path("models")
+    embedding_local_path: Path = Path("models/Qwen3-Embedding-0.6B")
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_api_base_url: str = "http://localhost:8001/v1"
     embedding_api_key: SecretStr = SecretStr("test-key")
-    embedding_dimensions: int = 2560
+    embedding_dimensions: int = Field(default=1024, ge=32, le=16_000)
     embedding_batch_size: int = Field(default=16, ge=1, le=256)
+    # Запросы подаются с инструкцией, документы — без неё. Это требование
+    # Qwen3-Embedding, а не украшение: асимметрия заложена в обучение.
+    embedding_query_instruction: str = DEFAULT_QUERY_INSTRUCTION
+    embedding_instruction_enabled: bool = True
 
-    reranker_mode: ProviderMode = ProviderMode.API
+    # --- reranker -----------------------------------------------------------
+    reranker_mode: ProviderMode = ProviderMode.LOCAL
     reranker_local_path: Path = Path("models/Qwen3-Reranker-0.6B")
     reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
     reranker_api_url: str = "http://localhost:8002/rerank"
     reranker_api_key: SecretStr = SecretStr("test-key")
     reranker_batch_size: int = Field(default=16, ge=1, le=128)
+    reranker_instruction: str = DEFAULT_QUERY_INSTRUCTION
+    reranker_max_length: int = Field(default=8192, ge=512, le=131_072)
 
-    light_llm_base_url: str = "https://api.openai.com/v1"
-    light_llm_api_key: SecretStr = SecretStr("test-key")
-    light_llm_model: str = "gpt-4.1-mini"
-    heavy_llm_base_url: str = "https://api.openai.com/v1"
-    heavy_llm_api_key: SecretStr = SecretStr("test-key")
-    heavy_llm_model: str = "gpt-5"
-    llm_timeout_seconds: float = Field(default=120, gt=0)
-
+    # --- Telegram -----------------------------------------------------------
     telegram_bot_token: SecretStr = SecretStr("test-token")
+    telegram_owner_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
     telegram_allowed_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
+    telegram_registration_mode: RegistrationMode = RegistrationMode.ALLOWLIST
+    telegram_allow_group_chats: bool = True
+    telegram_auto_register_chats: bool = True
     telegram_webhook_url: str | None = None
     telegram_webhook_secret: SecretStr | None = None
+    telegram_global_rate_per_second: float = Field(default=25, gt=0, le=30)
+    telegram_chat_rate_per_second: float = Field(default=1, gt=0, le=30)
+    telegram_group_rate_per_minute: float = Field(default=18, gt=0, le=20)
 
-    openalex_email: str | None = None
-    crossref_email: str | None = None
-    semantic_scholar_api_key: SecretStr | None = None
-    github_token: SecretStr | None = None
-    hf_token: SecretStr | None = None
+    # --- доставка -----------------------------------------------------------
+    delivery_batch_size: int = Field(default=50, ge=1, le=1000)
+    delivery_max_attempts: int = Field(default=5, ge=1, le=20)
+    delivery_retry_backoff_seconds: int = Field(default=60, ge=1, le=86_400)
+    delivery_job_ttl_hours: int = Field(default=72, ge=1, le=720)
+    delivery_dry_run: bool = False
 
+    # --- harvest ------------------------------------------------------------
+    harvest_profile_key: str = "geo_ai_core"
+    harvest_config_path: Path = Path("config/harvest.yaml")
     taxonomy_path: Path = Path("config/taxonomy.yaml")
+    collection_lookback_hours: int = Field(default=192, ge=1, le=8760)
+    max_items_per_source: int = Field(default=300, ge=1, le=5000)
+    harvest_keyword_threshold: float = Field(default=0.35, ge=0, le=1)
+    harvest_store_rejected: bool = True
+    harvest_decision_retention_days: int = Field(default=90, ge=1, le=3650)
+    #: Через сколько минут «выполняющийся» прогон считать оборванным. Частичный
+    #: уникальный индекс не даёт запустить второй сбор параллельно, поэтому
+    #: запись, которую упавший процесс не закрыл, блокирует сбор до тех пор,
+    #: пока её кто-нибудь не подберёт. В минутах, а не в часах: сбор редко идёт
+    #: дольше получаса, а каждый час ожидания — это час без новых материалов.
+    harvest_run_stale_minutes: int = Field(default=90, ge=5, le=10080)
+
+    # --- пороги пайплайна ---------------------------------------------------
     semantic_threshold: float = Field(default=0.45, ge=-1, le=1)
     digest_score_threshold: float = Field(default=6.5, ge=0, le=10)
     deep_analysis_threshold: float = Field(default=8.0, ge=0, le=10)
     alert_score_threshold: float = Field(default=9.0, ge=0, le=10)
-    collection_lookback_hours: int = Field(default=30, ge=1, le=720)
-    max_items_per_source: int = Field(default=200, ge=1, le=1000)
     personalization_candidate_limit: int = Field(default=100, ge=10, le=1000)
     personal_semantic_weight: float = Field(default=0.40, ge=0, le=1)
     personal_reranker_weight: float = Field(default=0.25, ge=0, le=1)
     personal_global_weight: float = Field(default=0.25, ge=0, le=1)
     personal_interest_weight: float = Field(default=0.10, ge=0, le=1)
 
-    @field_validator("telegram_allowed_user_ids", mode="before")
+    # --- подписки -----------------------------------------------------------
+    default_subscription_plan: str = "free"
+    # Интервал между дайджестами для подписчика без действующего тарифа.
+    # Профиль может просить реже, но не чаще: иначе ограничение плана
+    # обходилось бы правкой собственных настроек.
+    digest_default_interval_hours: int = Field(default=168, ge=1, le=8760)
+    default_trial_days: int = Field(default=14, ge=0, le=365)
+    subscription_grace_days: int = Field(default=3, ge=0, le=90)
+
+    # --- источники ----------------------------------------------------------
+    openalex_email: str | None = None
+    crossref_email: str | None = None
+    semantic_scholar_api_key: SecretStr | None = None
+    github_token: SecretStr | None = None
+    hf_token: SecretStr | None = None
+
+    # --- метрики ------------------------------------------------------------
+    metrics_enabled: bool = True
+    metrics_timezone: str = "Europe/Moscow"
+    metrics_rollup_cron: str = "15 * * * *"
+    metrics_retention_days: int = Field(default=730, ge=1, le=3650)
+    metrics_active_window_days: int = Field(default=30, ge=1, le=365)
+    metrics_cohort_weeks: int = Field(default=12, ge=1, le=104)
+    metrics_rollup_lookback_days: int = Field(default=3, ge=1, le=90)
+    prometheus_enabled: bool = True
+    prometheus_path: str = "/metrics"
+
+    # ------------------------------------------------------------------ #
+    # Валидаторы                                                          #
+    # ------------------------------------------------------------------ #
+
+    def llm_api_key(self, *, heavy: bool) -> str:
+        """Ключ роли, а если он не задан — общий DEFAULT_LLM_API_KEY.
+
+        Обе роли обычно живут у одного провайдера, и держать один ключ в трёх
+        переменных — способ однажды обновить две из трёх.
+        """
+
+        specific = (self.heavy_llm_api_key if heavy else self.light_llm_api_key).get_secret_value()
+        placeholder = {"", "test-key", "replace-me"}
+        if specific and specific not in placeholder:
+            return specific
+        return self.default_llm_api_key.get_secret_value()
+
+    def webhook_endpoint(self) -> str | None:
+        """Полный URL вебхука: явный TELEGRAM_WEBHOOK_URL либо PUBLIC_BASE_URL."""
+
+        if self.telegram_webhook_url:
+            return self.telegram_webhook_url.rstrip("/")
+        base = (self.public_base_url or "").rstrip("/")
+        if not base or base.startswith("http://localhost") or base.startswith("http://127."):
+            # Telegram не сможет достучаться до localhost — молчаливая регистрация
+            # такого вебхука выглядела бы как рабочая настройка.
+            return None
+        return f"{base}/telegram/webhook"
+
+    @field_validator("telegram_allowed_user_ids", "telegram_owner_ids", mode="before")
     @classmethod
     def parse_user_ids(cls, value: object) -> object:
         if isinstance(value, str):
             if not value.strip():
                 return []
-            return [int(item.strip()) for item in value.split(",")]
+            return [int(item.strip()) for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("admin_cors_origins", mode="before")
+    @classmethod
+    def parse_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("database_ssl_root_cert", mode="before")
+    @classmethod
+    def expand_cert_path(cls, value: object) -> object:
+        """Развернуть ~ в пути до корневого сертификата."""
+
+        if isinstance(value, str):
+            stripped = value.strip()
+            return Path(stripped).expanduser() if stripped else None
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def treat_blank_as_unset(cls, values: object) -> object:
+        """Пустое значение в .env означает «не задано», а не пустую строку.
+
+        `LOG_JSON=` — естественный способ записать «по умолчанию», и падать на
+        нём нельзя. Правило применяется только к полям, которые вообще
+        допускают None: у обязательных пустое значение по-прежнему ошибка.
+        """
+
+        if not isinstance(values, dict):
+            return values
+        cleaned = dict(values)
+        for name, field in cls.model_fields.items():
+            for key in (name, name.upper()):
+                value = cleaned.get(key)
+                if isinstance(value, str) and not value.strip() and _optional(field):
+                    cleaned[key] = None
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_database_tls(self) -> Settings:
+        """verify-ca и verify-full без корневого сертификата — молчаливая фикция."""
+
+        if self.database_ssl_mode in (SSLMode.VERIFY_CA, SSLMode.VERIFY_FULL):
+            if self.database_ssl_root_cert is None:
+                raise ValueError(
+                    f"DATABASE_SSL_MODE={self.database_ssl_mode} требует DATABASE_SSL_ROOT_CERT"
+                )
+            if not self.database_ssl_root_cert.is_file():
+                raise ValueError(f"Корневой сертификат не найден: {self.database_ssl_root_cert}")
+        if "sslmode=" in self.database_url:
+            raise ValueError(
+                "asyncpg не понимает sslmode внутри DSN: удали параметр из "
+                "DATABASE_URL и задай режим через DATABASE_SSL_MODE"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_connection_budget(self) -> Settings:
+        """Пул не должен молча превышать бюджет соединений процесса."""
+
+        requested = self.db_pool_size + self.db_max_overflow
+        if requested > self.db_connection_budget:
+            raise ValueError(
+                f"Пул PostgreSQL превышает DB_CONNECTION_BUDGET: DB_POOL_SIZE "
+                f"({self.db_pool_size}) + DB_MAX_OVERFLOW ({self.db_max_overflow}) "
+                f"= {requested} > {self.db_connection_budget}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_embedding_dimensions(self) -> Settings:
+        """Размерность не может превышать нативную: Matryoshka режет только вниз."""
+
+        native = _native_dimensions(self.embedding_model)
+        if native is not None and self.embedding_dimensions > native:
+            raise ValueError(
+                f"EMBEDDING_DIMENSIONS={self.embedding_dimensions} больше нативной "
+                f"размерности модели {self.embedding_model} ({native}). Matryoshka "
+                f"обрезает вектор, но не удлиняет его: возьми модель крупнее или "
+                f"уменьши размерность."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vector_index(self) -> Settings:
+        """Размерность должна помещаться в выбранный индекс pgvector."""
+
+        if self.vector_backend is not VectorBackend.PGVECTOR:
+            return self
+        if self.vector_index_kind is VectorIndexKind.NONE:
+            return self
+        limit = PGVECTOR_INDEX_LIMITS[(self.vector_column_type, self.vector_index_kind)]
+        if self.embedding_dimensions > limit:
+            hint = (
+                "перейди на VECTOR_COLUMN_TYPE=halfvec (потолок 4000, нужен pgvector 0.7+)"
+                if self.vector_column_type is VectorColumnType.VECTOR
+                else "обрежь вектор Matryoshka до 4000 или ниже"
+            )
+            raise ValueError(
+                f"EMBEDDING_DIMENSIONS={self.embedding_dimensions} не помещается в индекс "
+                f"{self.vector_index_kind} на колонке {self.vector_column_type} "
+                f"(потолок {limit}): {hint}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_admin_credentials(self) -> Settings:
+        """В production пароль админки должен быть хешем, а не открытым текстом."""
+
+        if not self.admin_password and not self.admin_password_hash:
+            raise ValueError("Нужен ADMIN_PASSWORD или ADMIN_PASSWORD_HASH")
+        if self.environment is Environment.PRODUCTION:
+            if not self.admin_password_hash:
+                raise ValueError("В production задай ADMIN_PASSWORD_HASH вместо ADMIN_PASSWORD")
+            if self.admin_jwt_secret.get_secret_value() == "change-me-in-production":
+                raise ValueError("В production задай собственный ADMIN_JWT_SECRET")
+        return self
 
     @model_validator(mode="after")
     def validate_personalization_weights(self) -> Settings:
@@ -110,6 +468,53 @@ class Settings(BaseSettings):
         if abs(total - 1.0) > 1e-9:
             raise ValueError("personalization weights must sum to 1.0")
         return self
+
+    # ------------------------------------------------------------------ #
+    # Производные значения                                                #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def database_pool_size(self) -> int:
+        """Историческое имя; источник истины — db_pool_size."""
+
+        return self.db_pool_size
+
+    @property
+    def database_max_overflow(self) -> int:
+        return self.db_max_overflow
+
+    @property
+    def database_connect_timeout_seconds(self) -> float:
+        return self.db_connect_timeout
+
+    @property
+    def native_embedding_dimensions(self) -> int | None:
+        """Нативная размерность модели, если она известна."""
+
+        return _native_dimensions(self.embedding_model)
+
+    @property
+    def embedding_is_truncated(self) -> bool:
+        """Режем ли мы вектор Matryoshka относительно нативной размерности."""
+
+        native = self.native_embedding_dimensions
+        return native is not None and self.embedding_dimensions < native
+
+    def query_instruction(self) -> str | None:
+        """Инструкция для запросов; для документов всегда None."""
+
+        if not self.embedding_instruction_enabled:
+            return None
+        return self.embedding_query_instruction.strip() or None
+
+
+def _optional(field: object) -> bool:
+    """Допускает ли поле None. Union вида `X | None` — самый частый случай."""
+
+    annotation = getattr(field, "annotation", None)
+    if annotation is None:
+        return False
+    return type(None) in get_args(annotation)
 
 
 @lru_cache(maxsize=1)

@@ -1,7 +1,12 @@
-"""Aiogram 3 bot assembled from application services."""
+"""Бот на aiogram 3, собранный из сервисов приложения.
+
+Весь текст, который видит человек, — на русском: продукт русскоязычный, и
+английские подписи в интерфейсе были наследием первых прототипов.
+"""
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
-    InlineKeyboardButton,
+    ErrorEvent,
     InlineKeyboardMarkup,
     Message,
 )
@@ -30,7 +35,11 @@ from geonexa_proxima.domain import (
     UserProfile,
 )
 from geonexa_proxima.services.container import Container, load_container
-from geonexa_proxima.telegram.middleware import AllowedUserMiddleware
+from geonexa_proxima.telegram.chats import register_chat_router
+from geonexa_proxima.telegram.keyboards import FEEDBACK_CODES, feedback_keyboard
+from geonexa_proxima.telegram.middleware import AccessMiddleware, AccessPolicy
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -42,22 +51,22 @@ class TelegramApplication:
     async def set_commands(self) -> None:
         await self.bot.set_my_commands(
             [
-                BotCommand(command="daily", description="Daily digest"),
-                BotCommand(command="week", description="Weekly digest"),
-                BotCommand(command="hot", description="Highest-scoring items"),
-                BotCommand(command="papers", description="Research papers"),
-                BotCommand(command="tools", description="Software and repositories"),
-                BotCommand(command="datasets", description="Datasets"),
-                BotCommand(command="search", description="Semantic search"),
-                BotCommand(command="trends", description="Trending research topics"),
-                BotCommand(command="why", description="Explain an item's relevance"),
-                BotCommand(command="profiles", description="List research profiles"),
-                BotCommand(command="profile_new", description="Create a profile"),
-                BotCommand(command="profile_use", description="Activate a profile"),
-                BotCommand(command="profile_edit", description="Edit active profile"),
-                BotCommand(command="profile_delete", description="Delete a profile"),
-                BotCommand(command="interests", description="Manage profile interests"),
-                BotCommand(command="personalization", description="Profile status and digest"),
+                BotCommand(command="daily", description="Дайджест за сутки"),
+                BotCommand(command="week", description="Дайджест за неделю"),
+                BotCommand(command="hot", description="Самое важное"),
+                BotCommand(command="papers", description="Научные статьи"),
+                BotCommand(command="tools", description="Софт и репозитории"),
+                BotCommand(command="datasets", description="Наборы данных"),
+                BotCommand(command="search", description="Смысловой поиск"),
+                BotCommand(command="trends", description="Что сейчас на подъёме"),
+                BotCommand(command="why", description="Почему это показано"),
+                BotCommand(command="profiles", description="Мои профили"),
+                BotCommand(command="profile_new", description="Создать профиль"),
+                BotCommand(command="profile_use", description="Сделать профиль активным"),
+                BotCommand(command="profile_edit", description="Изменить активный профиль"),
+                BotCommand(command="profile_delete", description="Удалить профиль"),
+                BotCommand(command="interests", description="Интересы профиля"),
+                BotCommand(command="personalization", description="Состояние профиля и дайджест"),
             ]
         )
 
@@ -71,49 +80,99 @@ class EditProfileForm(StatesGroup):
     description = State()
 
 
-_FEEDBACK_CODES = {
-    "vi": FeedbackKind.VERY_INTERESTING,
-    "u": FeedbackKind.USEFUL,
-    "ni": FeedbackKind.NOT_INTERESTING,
-    "s": FeedbackKind.SAVE,
-    "d": FeedbackKind.DEEPER,
+#: Коды кнопок берём из общего модуля клавиатур: разметку под материалом
+#: рисует и бот, и воркер доставки, и разъезд между ними означал бы, что
+#: кнопка из планового дайджеста не обрабатывается вовсе.
+_FEEDBACK_CODES = {code: FeedbackKind(value) for code, value in FEEDBACK_CODES.items()}
+
+#: Как называется реакция в подтверждении. Значения enum — машинные
+#: («very_interesting»), показывать их человеку нельзя.
+_FEEDBACK_LABELS = {
+    FeedbackKind.VERY_INTERESTING: "очень интересно",
+    FeedbackKind.USEFUL: "полезно",
+    FeedbackKind.NOT_INTERESTING: "не моё",
+    FeedbackKind.SAVE: "сохранено",
+    FeedbackKind.DEEPER: "разберу подробнее",
 }
 
 
 def _item_keyboard(profile_score_id: UUID) -> InlineKeyboardMarkup:
-    suffix = str(profile_score_id)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Very interesting",
-                    callback_data=f"fb:vi:{suffix}",
-                ),
-                InlineKeyboardButton(text="Useful", callback_data=f"fb:u:{suffix}"),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Not for me",
-                    callback_data=f"fb:ni:{suffix}",
-                ),
-                InlineKeyboardButton(text="Save", callback_data=f"fb:s:{suffix}"),
-                InlineKeyboardButton(text="Go deeper", callback_data=f"fb:d:{suffix}"),
-            ],
-            [InlineKeyboardButton(text="Why this?", callback_data=f"pw:{suffix}")],
-        ]
-    )
+    """Та же клавиатура, что у планового дайджеста, в типах aiogram."""
+
+    return InlineKeyboardMarkup.model_validate(feedback_keyboard(profile_score_id))
 
 
 async def _registered(message: Message, container: Container) -> tuple[User, UserProfile]:
     telegram_user = message.from_user
     if telegram_user is None:
-        raise RuntimeError("Telegram update has no user")
-    return await container.profile_service().register_user(
+        raise RuntimeError("В апдейте Telegram нет пользователя")
+    result = await container.profile_service().register_user(
         telegram_user.id,
         username=telegram_user.username,
         display_name=telegram_user.full_name,
         language_code=telegram_user.language_code,
     )
+    await _log_activity(
+        container,
+        result[0],
+        "command",
+        payload={"text": (message.text or "")[:64]},
+    )
+    return result
+
+
+async def _log_activity(
+    container: Container,
+    user: User,
+    kind: str,
+    *,
+    payload: dict[str, object] | None = None,
+    item_id: UUID | None = None,
+) -> None:
+    """Записать событие в ленту активности.
+
+    На этой ленте стоят DAU/WAU/MAU и удержание когорт. Начать писать её позже
+    запуска — значит навсегда остаться без статистики за первые недели: задним
+    числом события не восстанавливаются.
+
+    Ошибка записи не должна мешать ответу пользователю: статистика дешевле
+    работающего бота.
+    """
+
+    if container.session_factory is None:
+        return
+    try:
+        from geonexa_proxima.db.subscriber_repository import SubscriberRepository
+
+        await SubscriberRepository(container.session_factory).record_activity(
+            user.id, kind, item_id=item_id, payload=payload
+        )
+    except Exception as error:
+        log.debug("Событие %s для %s не записано: %s", kind, user.id, error)
+
+
+async def _ensure_trial(container: Container, user: User) -> object | None:
+    """Выдать пробный период при первом знакомстве.
+
+    Идемпотентно и молча: повторный /start — обычное дело, и падать на нём
+    нельзя. `DEFAULT_TRIAL_DAYS=0` отключает пробный период целиком.
+    """
+
+    settings = container.settings
+    if not settings.default_trial_days or container.session_factory is None:
+        return None
+    from geonexa_proxima.db.subscriber_repository import SubscriberRepository
+
+    try:
+        return await SubscriberRepository(container.session_factory).start_trial(
+            user.id,
+            plan_key=settings.default_subscription_plan,
+            trial_days=settings.default_trial_days,
+            grace_days=settings.subscription_grace_days,
+        )
+    except Exception as error:
+        log.warning("Пробный период для %s не выдан: %s", user.id, error)
+        return None
 
 
 async def _resolve_profile(
@@ -158,7 +217,7 @@ async def _send_digest(
     )
     await message.answer(f"<b>{escape(heading)} · {escape(profile.name)}</b>")
     if not candidates:
-        await message.answer("No matching items yet.")
+        await message.answer("Пока нечего показать: подходящих материалов нет.")
         return
     for candidate in candidates:
         await message.answer(
@@ -175,38 +234,57 @@ def create_telegram_app(container: Container) -> TelegramApplication:
     )
     dispatcher = Dispatcher()
     router = Router(name="geonexa")
-    authorization = AllowedUserMiddleware(set(settings.telegram_allowed_user_ids))
+    policy = AccessPolicy(
+        settings.telegram_registration_mode,
+        allowed_user_ids=settings.telegram_allowed_user_ids,
+        owner_ids=settings.telegram_owner_ids,
+        allow_group_chats=settings.telegram_allow_group_chats,
+    )
+    if policy.is_effectively_open:
+        log.warning(
+            "Бот отвечает всем: режим %s, список разрешённых пуст. "
+            "Задай TELEGRAM_ALLOWED_USER_IDS или TELEGRAM_OWNER_IDS.",
+            policy.mode.value,
+        )
+    authorization = AccessMiddleware(policy)
     router.message.outer_middleware(authorization)
     router.callback_query.outer_middleware(authorization)
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
-        _, profile = await _registered(message, container)
-        await message.answer(
-            "<b>GeoNexa Proxima</b>\n"
-            "Your private radar for geotechnical research, AI methods, tools, and datasets.\n\n"
-            f"Active profile: <b>{escape(profile.name)}</b>\n"
-            "Use /profile_edit to describe your interests, for example: "
-            "«I am a geotechnical engineer working on ML for soil liquefaction».\n\n"
-            "Use /daily, /week, /hot, /papers, /tools, /datasets, or /search &lt;query&gt;."
+        user, profile = await _registered(message, container)
+        trial = await _ensure_trial(container, user)
+        greeting = (
+            "<b>Проксима</b> — радар научных публикаций ГЕОНЕКСЫ.\n"
+            "Инженерная геология, геотехника и то, что делает с ними ИИ.\n\n"
+            f"Активный профиль: <b>{escape(profile.name)}</b>\n"
+            "Опишите интересы через /profile_edit — например: «инженер-геотехник, "
+            "занимаюсь ML для разжижения грунтов».\n\n"
+            "Команды: /daily, /week, /hot, /papers, /tools, /datasets, /search &lt;запрос&gt;."
         )
+        if trial is not None and trial.ends_at is not None:
+            greeting += (
+                f"\n\nПробный период до {trial.ends_at:%d.%m.%Y} — тариф "
+                f"«{escape(trial.plan_name)}»."
+            )
+        await message.answer(greeting)
 
     @router.message(Command("cancel"))
     async def cancel(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer("Current profile operation cancelled.")
+        await message.answer("Отменено.")
 
     @router.message(Command("profiles"))
     async def profiles(message: Message) -> None:
         user, _ = await _registered(message, container)
         user_profiles = await container.profile_service().list_profiles(user.id)
-        lines = ["<b>Your research profiles</b>"]
+        lines = ["<b>Ваши профили</b>"]
         for profile in user_profiles:
             flags = []
             if profile.is_active:
-                flags.append("active")
+                flags.append("активный")
             if profile.digest_enabled:
-                flags.append("digest on")
+                flags.append("дайджест включён")
             suffix = f" ({', '.join(flags)})" if flags else ""
             lines.append(f"• <b>{escape(profile.name)}</b>{suffix}\n<code>{profile.id}</code>")
         await message.answer("\n\n".join(lines))
@@ -218,20 +296,20 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         if supplied_name:
             await state.update_data(profile_name=supplied_name)
             await state.set_state(CreateProfileForm.description)
-            await message.answer("Describe what this profile should track. Send /skip for empty.")
+            await message.answer("Опишите, за чем должен следить профиль. /skip — оставить пустым.")
             return
         await state.set_state(CreateProfileForm.name)
-        await message.answer("Send a short unique profile name. Use /cancel to stop.")
+        await message.answer("Пришлите короткое название профиля. /cancel — отменить.")
 
     @router.message(CreateProfileForm.name)
     async def profile_new_name(message: Message, state: FSMContext) -> None:
         name = (message.text or "").strip()
         if not name:
-            await message.answer("Profile name cannot be empty.")
+            await message.answer("Название не может быть пустым.")
             return
         await state.update_data(profile_name=name)
         await state.set_state(CreateProfileForm.description)
-        await message.answer("Describe your interests in natural language. Send /skip for empty.")
+        await message.answer("Опишите интересы обычными словами. /skip — оставить пустым.")
 
     @router.message(CreateProfileForm.description)
     async def profile_new_description(message: Message, state: FSMContext) -> None:
@@ -247,7 +325,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             is_active=True,
         )
         await state.clear()
-        await message.answer(f"Profile <b>{escape(profile.name)}</b> created and activated.")
+        await message.answer(f"Профиль <b>{escape(profile.name)}</b> создан и активирован.")
 
     @router.message(Command("profile_use"))
     async def profile_use(message: Message) -> None:
@@ -255,10 +333,10 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         selector = (message.text or "").partition(" ")[2].strip()
         profile = await _resolve_profile(container, user.id, selector) if selector else None
         if profile is None:
-            await message.answer("Usage: /profile_use &lt;name or UUID&gt;")
+            await message.answer("Как пользоваться: /profile_use &lt;название или UUID&gt;")
             return
         activated = await container.profile_service().activate_profile(user.id, profile.id)
-        await message.answer(f"Active profile: <b>{escape(activated.name)}</b>")
+        await message.answer(f"Активный профиль: <b>{escape(activated.name)}</b>")
 
     @router.message(Command("profile_edit"))
     async def profile_edit(message: Message, state: FSMContext) -> None:
@@ -271,13 +349,12 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                 description=description,
             )
             await message.answer(
-                f"Profile <b>{escape(updated.name)}</b> updated (version {updated.version})."
+                f"Профиль <b>{escape(updated.name)}</b> обновлён (версия {updated.version})."
             )
             return
         await state.set_state(EditProfileForm.description)
         await message.answer(
-            "Describe what you want this profile to track. "
-            "The current description will be replaced."
+            "Опишите, за чем должен следить профиль. Текущее описание будет заменено целиком."
         )
 
     @router.message(EditProfileForm.description)
@@ -285,7 +362,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         _, active = await _registered(message, container)
         description = (message.text or "").strip()
         if not description:
-            await message.answer("Description cannot be empty; use /cancel.")
+            await message.answer("Описание не может быть пустым. /cancel — отменить.")
             return
         updated = await container.profile_service().update_profile(
             active.user_id,
@@ -294,7 +371,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         )
         await state.clear()
         await message.answer(
-            f"Profile <b>{escape(updated.name)}</b> updated (version {updated.version})."
+            f"Профиль <b>{escape(updated.name)}</b> обновлён (версия {updated.version})."
         )
 
     @router.message(Command("profile_delete"))
@@ -303,14 +380,14 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         selector = (message.text or "").partition(" ")[2].strip()
         profile = await _resolve_profile(container, user.id, selector) if selector else None
         if profile is None:
-            await message.answer("Usage: /profile_delete &lt;name or UUID&gt;")
+            await message.answer("Как пользоваться: /profile_delete &lt;название или UUID&gt;")
             return
         try:
             active = await container.profile_service().delete_profile(user.id, profile.id)
         except ValueError as error:
             await message.answer(escape(str(error)))
             return
-        await message.answer(f"Profile deleted. Active profile: <b>{escape(active.name)}</b>")
+        await message.answer(f"Профиль удалён. Активный профиль: <b>{escape(active.name)}</b>")
 
     @router.message(Command("interests"))
     async def interests(message: Message) -> None:
@@ -319,19 +396,17 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         service = container.profile_service()
         if not arguments:
             values = await container.profile_repository.list_interests(user.id, profile.id)
-            lines = [f"<b>Interests · {escape(profile.name)}</b>"]
+            lines = [f"<b>Интересы · {escape(profile.name)}</b>"]
             lines.extend(
                 f"• {value.polarity.value} {value.weight:g}: {escape(value.target_text)} "
                 f"<code>{value.id}</code>"
                 for value in values
             )
             if len(lines) == 1:
-                lines.append(
-                    "No explicit interests. The natural-language description still applies."
-                )
+                lines.append("Явных интересов нет — работает только текстовое описание профиля.")
             lines.append(
-                "\nAdd: <code>/interests add + 5 soil liquefaction</code>\n"
-                "Remove: <code>/interests remove UUID</code>"
+                "\nДобавить: <code>/interests add + 5 разжижение грунтов</code>\n"
+                "Убрать: <code>/interests remove UUID</code>"
             )
             await message.answer("\n".join(lines))
             return
@@ -340,7 +415,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             try:
                 weight = float(parts[2])
             except ValueError:
-                await message.answer("Weight must be a number from 0 to 10.")
+                await message.answer("Вес — число от 0 до 10.")
                 return
             polarity = InterestPolarity.POSITIVE if parts[1] == "+" else InterestPolarity.NEGATIVE
             interest = await service.add_interest(
@@ -350,21 +425,21 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                 polarity=polarity,
                 weight=weight,
             )
-            await message.answer(f"Interest saved: {escape(interest.target_text)}")
+            await message.answer(f"Интерес сохранён: {escape(interest.target_text)}")
             return
         if len(parts) == 2 and parts[0] == "remove":
             try:
                 interest_id = UUID(parts[1])
             except ValueError:
-                await message.answer("Interest ID must be a UUID.")
+                await message.answer("Идентификатор интереса — это UUID.")
                 return
             await service.remove_interest(user.id, profile.id, interest_id)
-            await message.answer("Interest removed.")
+            await message.answer("Интерес убран.")
             return
         await message.answer(
-            "Usage:\n"
-            "<code>/interests add + 5 soil liquefaction</code>\n"
-            "<code>/interests add - 3 pavement crack vision</code>\n"
+            "Как пользоваться:\n"
+            "<code>/interests add + 5 разжижение грунтов</code>\n"
+            "<code>/interests add - 3 распознавание трещин в асфальте</code>\n"
             "<code>/interests remove UUID</code>"
         )
 
@@ -378,13 +453,14 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                 profile.id,
                 digest_enabled=action == "on",
             )
-        description = profile.description or "Uses only the base GeoNexa taxonomy."
+        description = profile.description or "Используется только базовая таксономия ГЕОНЕКСЫ."
         await message.answer(
             f"<b>{escape(profile.name)}</b>\n"
-            f"Version: {profile.version}\n"
-            f"Scheduled digest: {'on' if profile.digest_enabled else 'off'}\n"
-            f"Description: {escape(description)}\n\n"
-            "Use <code>/personalization on</code> or <code>/personalization off</code>."
+            f"Версия: {profile.version}\n"
+            f"Плановый дайджест: {'включён' if profile.digest_enabled else 'выключен'}\n"
+            f"Описание: {escape(description)}\n\n"
+            "Переключить: <code>/personalization on</code> или "
+            "<code>/personalization off</code>."
         )
 
     @router.message(Command("daily"))
@@ -392,7 +468,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         await _send_digest(
             message,
             container,
-            heading="Daily GeoNexa digest",
+            heading="Дайджест за сутки",
             limit=20,
             minimum_score=settings.digest_score_threshold,
             since=datetime.now(UTC) - timedelta(days=1),
@@ -403,7 +479,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         await _send_digest(
             message,
             container,
-            heading="Weekly GeoNexa digest",
+            heading="Дайджест за неделю",
             limit=50,
             minimum_score=settings.digest_score_threshold,
             since=datetime.now(UTC) - timedelta(days=7),
@@ -414,7 +490,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         await _send_digest(
             message,
             container,
-            heading="Hot items",
+            heading="Самое важное",
             limit=20,
             minimum_score=settings.alert_score_threshold,
         )
@@ -424,7 +500,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         await _send_digest(
             message,
             container,
-            heading="Papers",
+            heading="Статьи",
             limit=30,
             minimum_score=settings.digest_score_threshold,
             kinds={ItemKind.PAPER, ItemKind.METHOD},
@@ -435,7 +511,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         await _send_digest(
             message,
             container,
-            heading="Tools",
+            heading="Инструменты",
             limit=30,
             minimum_score=settings.digest_score_threshold,
             kinds={ItemKind.SOFTWARE},
@@ -446,7 +522,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         await _send_digest(
             message,
             container,
-            heading="Datasets",
+            heading="Данные",
             limit=30,
             minimum_score=settings.digest_score_threshold,
             kinds={ItemKind.DATASET},
@@ -457,7 +533,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         _, profile = await _registered(message, container)
         query = (message.text or "").partition(" ")[2].strip()
         if not query:
-            await message.answer("Usage: /search &lt;query&gt;")
+            await message.answer("Как пользоваться: /search &lt;запрос&gt;")
             return
         hits = await container.search_service().search(
             query,
@@ -465,9 +541,9 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             profile_text=profile.compiled_text,
         )
         if not hits:
-            await message.answer("No semantic matches found.")
+            await message.answer("По смыслу ничего не нашлось.")
             return
-        lines = [f"<b>Search: {escape(query)}</b>"]
+        lines = [f"<b>Поиск: {escape(query)}</b>"]
         for hit in hits:
             lines.append(
                 f"<b>{escape(hit.title)}</b> · {hit.score:.3f}"
@@ -482,9 +558,9 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             category for item in items if item.rank for category in item.rank.categories
         )
         if not topics:
-            await message.answer("Not enough ranked items to calculate trends yet.")
+            await message.answer("Пока мало оценённых материалов, тренды считать не на чем.")
             return
-        lines = ["<b>Current research trends</b>"]
+        lines = ["<b>Что сейчас на подъёме</b>"]
         lines.extend(
             f"{index}. {escape(topic)} — {count}"
             for index, (topic, count) in enumerate(topics.most_common(10), start=1)
@@ -496,13 +572,13 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         try:
             item_id = UUID(raw_item_id)
         except ValueError:
-            await message.answer("Usage: /why &lt;item UUID&gt;")
+            await message.answer("Как пользоваться: /why &lt;UUID материала&gt;")
             return
         item = await container.repository.get(item_id)
         if item is None:
-            await message.answer("Item not found.")
+            await message.answer("Материал не найден.")
             return
-        details = [f"<b>Why: {escape(item.title)}</b>"]
+        details = [f"<b>Почему: {escape(item.title)}</b>"]
         scores = await container.profile_repository.list_profile_item_scores(
             user.id,
             profile.id,
@@ -511,7 +587,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         )
         personal_score = next((score for score in scores if score.item_id == item_id), None)
         if personal_score:
-            details.append(f"Personal score: {personal_score.personal_score * 10:.1f}/10")
+            details.append(f"Персональная оценка: {personal_score.personal_score * 10:.1f}/10")
             if personal_score.explanation:
                 details.append(escape(personal_score.explanation))
         if container.deep_personalizer:
@@ -521,13 +597,18 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                     profile_text=profile.compiled_text,
                     personal_score=(personal_score.personal_score if personal_score else 0),
                 )
-                details.append("<b>Profile-specific analysis</b>\n" + escape(deep_reason))
-            except Exception:
-                pass
+                details.append("<b>Разбор под ваш профиль</b>\n" + escape(deep_reason))
+            except Exception as error:
+                # Ответ важнее разбора: без LLM остальные блоки всё равно есть.
+                # Но молчать нельзя — так неработающий ключ провайдера выглядел
+                # бы как «модель просто ничего не сказала».
+                log.warning("Глубокий разбор для %s не получен: %s", item_id, error)
         if item.rank:
             details.append(escape(item.rank.reason))
         if item.analysis:
-            details.append("<b>For geotechnics</b>\n" + escape(item.analysis.geotechnical_transfer))
+            details.append(
+                "<b>Что это даёт геотехнике</b>\n" + escape(item.analysis.geotechnical_transfer)
+            )
         await message.answer("\n\n".join(details))
 
     @router.message(Command("why"))
@@ -546,11 +627,11 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         try:
             score_id = UUID((callback.data or "").partition(":")[2])
         except ValueError:
-            await callback.answer("Invalid score reference.", show_alert=True)
+            await callback.answer("Ссылка на оценку не распознана.", show_alert=True)
             return
         score = await container.profile_repository.get_profile_item_score(user.id, score_id)
         if score is None:
-            await callback.answer("This personalized result has expired.", show_alert=True)
+            await callback.answer("Этот результат уже устарел.", show_alert=True)
             return
         item = await container.repository.get(score.item_id)
         if callback.message and item:
@@ -560,8 +641,8 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                 None,
             )
             details = [
-                f"<b>Why: {escape(item.title)}</b>",
-                f"Personal score: {score.personal_score * 10:.1f}/10",
+                f"<b>Почему: {escape(item.title)}</b>",
+                f"Персональная оценка: {score.personal_score * 10:.1f}/10",
             ]
             if score.explanation:
                 details.append(escape(score.explanation))
@@ -572,12 +653,12 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                         profile_text=source_profile.compiled_text,
                         personal_score=score.personal_score,
                     )
-                    details.append("<b>Profile-specific analysis</b>\n" + escape(deep_reason))
-                except Exception:
-                    pass
+                    details.append("<b>Разбор под ваш профиль</b>\n" + escape(deep_reason))
+                except Exception as error:
+                    log.warning("Глубокий разбор для %s не получен: %s", score.item_id, error)
             if item.analysis:
                 details.append(
-                    "<b>For geotechnics</b>\n" + escape(item.analysis.geotechnical_transfer)
+                    "<b>Что это даёт геотехнике</b>\n" + escape(item.analysis.geotechnical_transfer)
                 )
             await callback.message.answer("\n\n".join(details))
         await callback.answer()
@@ -589,7 +670,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             kind = _FEEDBACK_CODES[action]
             score_id = UUID(raw_score_id)
         except (KeyError, ValueError):
-            await callback.answer("Unknown feedback action.", show_alert=True)
+            await callback.answer("Неизвестная реакция.", show_alert=True)
             return
         actor = callback.from_user
         user, _ = await container.profile_service().register_user(
@@ -600,7 +681,7 @@ def create_telegram_app(container: Container) -> TelegramApplication:
         )
         score = await container.profile_repository.get_profile_item_score(user.id, score_id)
         if score is None:
-            await callback.answer("This personalized result has expired.", show_alert=True)
+            await callback.answer("Этот результат уже устарел.", show_alert=True)
             return
         await container.feedback_service().record(
             user_id=user.id,
@@ -609,9 +690,51 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             kind=kind,
             context={"transport": "telegram", "profile_score_id": str(score_id)},
         )
-        await callback.answer(f"Marked as {kind.value.replace('_', ' ')}.")
+        await _log_activity(
+            container,
+            user,
+            "feedback",
+            item_id=score.item_id,
+            payload={"kind": kind.value},
+        )
+        await callback.answer(f"Отмечено: {_FEEDBACK_LABELS[kind]}.")
+
+    @dispatcher.errors()
+    async def on_error(event: ErrorEvent) -> bool:
+        """Ответить человеку, даже когда обработчик упал.
+
+        Без этого исключение в хендлере уходит только в лог, а в чате не
+        появляется ничего: команда выглядит «не работающей», и отличить
+        сломанный сервис от пустой выдачи снаружи невозможно. Текст ошибки
+        пользователю не показываем — там могут быть внутренние адреса и имена,
+        — но говорим, что произошло и что это не его вина.
+        """
+
+        log.exception(
+            "Обработчик упал на апдейте %s", event.update.update_id, exc_info=event.exception
+        )
+        message = event.update.message or (
+            event.update.callback_query.message if event.update.callback_query else None
+        )
+        note = (
+            "Не получилось выполнить команду — сервис сейчас не в порядке. "
+            "Мы уже видим ошибку в логах; попробуйте позже."
+        )
+        try:
+            if event.update.callback_query is not None:
+                await event.update.callback_query.answer(note, show_alert=True)
+            elif message is not None:
+                await message.answer(note)
+        except Exception:  # ответить не удалось — значит, недоступен и Bot API
+            log.warning("Не удалось сообщить об ошибке в чат")
+        # True: событие обработано, aiogram не должен ронять polling.
+        return True
 
     dispatcher.include_router(router)
+    # Роутер чатов идёт отдельным: апдейт my_chat_member приходит без
+    # from_user в привычном смысле и не должен проходить через политику
+    # доступа для команд — иначе бота добавят в группу, а мы не узнаем.
+    dispatcher.include_router(register_chat_router(container))
     return TelegramApplication(bot=bot, dispatcher=dispatcher, container=container)
 
 

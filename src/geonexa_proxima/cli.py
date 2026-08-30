@@ -1,4 +1,4 @@
-"""GeoNexa command-line entrypoints."""
+"""Команды Проксимы."""
 
 from __future__ import annotations
 
@@ -9,7 +9,24 @@ from typing import Annotated
 
 import typer
 
-app = typer.Typer(help="GeoNexa Proxima application services.", no_args_is_help=True)
+app = typer.Typer(help="Сервисы Проксимы.", no_args_is_help=True)
+
+
+@app.callback()
+def main() -> None:
+    """Настроить логирование до выполнения любой команды.
+
+    Без этого LOG_LEVEL из .env не действовал ни на одну команду: модуль
+    логирования существовал, но его никто не вызывал.
+    """
+
+    try:
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.logging import configure_from_settings
+
+        configure_from_settings(get_settings())
+    except Exception:
+        pass
 
 
 @app.command()
@@ -27,7 +44,7 @@ def api(
 
     if bootstrap:
         os.environ["GEONEXA_BOOTSTRAP"] = bootstrap
-    uvicorn.run("geonexa_proxima.api.app:app", host=host, port=port, reload=reload)
+    uvicorn.run("geonexa_proxima.api:app", host=host, port=port, reload=reload)
 
 
 @app.command()
@@ -73,17 +90,24 @@ def collect(
 def digests(
     deliver: Annotated[
         bool,
-        typer.Option(help="Send via Telegram; disable for a persisted dry run."),
+        typer.Option(help="Ставить задания в очередь; выключи для сухого прогона."),
     ] = True,
+    kinds: Annotated[
+        str | None,
+        typer.Option(help="Виды подписчиков через запятую: user, group, channel."),
+    ] = None,
     bootstrap: Annotated[
         str | None, typer.Option(help="Dependency factory as module:callable.")
     ] = None,
 ) -> None:
-    """Build one personalized digest for every enabled profile."""
+    """Построить дайджест для каждого профиля, которому пора."""
 
-    from geonexa_proxima.workflows.digests import personal_digests_flow
+    from geonexa_proxima.workflows.dispatch import digest_dispatch_flow
 
-    result = asyncio.run(personal_digests_flow(bootstrap_target=bootstrap, deliver=deliver))
+    selected = [part.strip() for part in kinds.split(",") if part.strip()] if kinds else None
+    result = asyncio.run(
+        digest_dispatch_flow(bootstrap_target=bootstrap, kinds=selected, deliver=deliver)
+    )
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -97,15 +121,177 @@ def flow_command(
 ) -> None:
     """Run the Prefect flow once or on a local schedule."""
 
-    from geonexa_proxima.workflows.ingestion import run_once, scheduled_entrypoint
+    from geonexa_proxima.workflows.harvest import global_harvest_flow
 
     if schedule:
-        scheduled_entrypoint(
-            interval_seconds=interval_seconds,
-            bootstrap_target=bootstrap,
+        raise typer.BadParameter(
+            "Локальный цикл убран: расписаниями управляет Prefect. "
+            "Заведи расписание в админке или запусти deployment вручную."
         )
-        return
-    typer.echo(json.dumps(run_once(bootstrap_target=bootstrap), ensure_ascii=False, indent=2))
+    result = asyncio.run(global_harvest_flow(bootstrap_target=bootstrap, trigger="manual"))
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+db_app = typer.Typer(help="Схема базы данных.", no_args_is_help=True)
+prefect_app = typer.Typer(help="Оркестрация Prefect.", no_args_is_help=True)
+app.add_typer(db_app, name="db")
+app.add_typer(prefect_app, name="prefect")
+
+
+@db_app.command("upgrade")
+def db_upgrade() -> None:
+    """Привести схему к текущей ревизии. На пустой базе создаёт всё с нуля."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.bootstrap import bootstrap
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine
+
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-migrate")
+        try:
+            return await bootstrap(engine, settings)
+        finally:
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
+@db_app.command("status")
+def db_status() -> None:
+    """Что сейчас в базе: пустая, отстаёт или актуальна."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.bootstrap import inspect_schema
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine, pool_snapshot
+
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-status")
+        try:
+            state = await inspect_schema(engine)
+            return {
+                "summary": state.summary,
+                "current_revision": state.current_revision,
+                "head_revision": state.head_revision,
+                "tables": state.tables,
+                "pool": pool_snapshot(engine),
+            }
+        finally:
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
+@db_app.command("seed")
+def db_seed() -> None:
+    """Досеять обязательные записи. Идемпотентно."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.bootstrap import seed_all
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine
+
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-seed")
+        try:
+            report = await seed_all(engine, settings)
+            return report.as_dict()
+        finally:
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
+@prefect_app.command("deploy")
+def prefect_deploy() -> None:
+    """Зарегистрировать флоу с расписаниями из базы."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine
+        from geonexa_proxima.workflows.deployments import deploy_all
+
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-deploy")
+        try:
+            return await deploy_all(engine, settings)
+        finally:
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
+@prefect_app.command("run")
+def prefect_run(
+    key: Annotated[str, typer.Argument(help="Ключ флоу, например global-harvest.")],
+    parameter: Annotated[
+        list[str] | None,
+        typer.Option("--param", "-p", help="Параметр вида имя=значение."),
+    ] = None,
+) -> None:
+    """Запустить флоу вручную — тем же путём, что и кнопка в админке."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine
+        from geonexa_proxima.services.prefect_admin import PrefectAdmin
+
+        params: dict[str, object] = {}
+        for raw in parameter or []:
+            name, _, value = raw.partition("=")
+            params[name] = json.loads(value) if value[:1] in '[{"0123456789' else value
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-cli")
+        admin = PrefectAdmin(settings, engine)
+        try:
+            return await admin.run_now(key, parameters=params, actor="cli")
+        finally:
+            await admin.aclose()
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
+@prefect_app.command("schedule")
+def prefect_schedule(
+    key: Annotated[str, typer.Argument(help="Ключ расписания.")],
+    cron: Annotated[str | None, typer.Option(help="Cron-выражение.")] = None,
+    interval: Annotated[int | None, typer.Option(help="Интервал в секундах.")] = None,
+    disable: Annotated[bool, typer.Option(help="Выключить расписание.")] = False,
+) -> None:
+    """Изменить расписание: сначала в базе, затем в Prefect."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine
+        from geonexa_proxima.services.prefect_admin import PrefectAdmin
+
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-cli")
+        admin = PrefectAdmin(settings, engine)
+        try:
+            return await admin.set_schedule(
+                key, cron=cron, interval_seconds=interval, enabled=not disable, actor="cli"
+            )
+        finally:
+            await admin.aclose()
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
+@prefect_app.command("cron")
+def prefect_cron(
+    expression: Annotated[str, typer.Argument(help="Cron-выражение для проверки.")],
+) -> None:
+    """Показать, когда сработает выражение. Проверка до сохранения."""
+
+    from geonexa_proxima.config import get_settings
+    from geonexa_proxima.services.prefect_admin import describe_cron
+
+    result = describe_cron(expression, timezone=get_settings().timezone)
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
