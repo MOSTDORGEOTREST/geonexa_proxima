@@ -1,0 +1,608 @@
+# =============================================================================
+# GeoNexa Proxima — глобальный harvest-профиль (scope сбора)
+# =============================================================================
+# Это НЕ профиль интересов пользователя. Это единственный ответ на вопрос
+# «что мы вообще тянем из внешнего мира», общий для всей платформы.
+#
+# Зачем: без него collectors качают весь arXiv/OpenAlex/Crossref. Профиль задаёт
+# (а) какие запросы отправлять в источники и (б) дешёвый детерминированный
+# keyword-gate, который отсекает мусор ДО эмбеддингов и LLM.
+#
+# Источник истины в runtime — таблицы harvest_profiles / harvest_term_groups /
+# harvest_terms / harvest_queries в PostgreSQL. Этот файл — seed и формат
+# экспорта:
+#   poetry run geonexa harvest seed   --file config/harvest.yaml   # YAML -> БД
+#   poetry run geonexa harvest export --file config/harvest.yaml   # БД -> YAML
+# Правки в админке меняют БД; export возвращает их в git.
+#
+# Матчинг: по нормализованному тексту (lower, схлопнутые пробелы, дефисы -> ' ').
+#   match: phrase — подстрока с границами слова ("soil mechanics")
+#   match: token  — отдельный токен ("PINN", "InSAR")
+#   match: regex  — python re, при необходимости
+#   match: prefix — начало слова ("liquefac" -> liquefaction / liquefiable)
+# =============================================================================
+
+version: 2
+schema: harvest_profile
+
+profile:
+  key: geo_ai_core
+  name: "Инженерная геология, геотехника и AI/ML"
+  description: >-
+    Базовый scope платформы: работы, методы, ПО и датасеты на пересечении
+    инженерной геологии / геотехники и машинного обучения, физически
+    информированного моделирования и приборного/дистанционного мониторинга.
+  is_active: true
+  languages: [en, ru]
+  item_kinds: [paper, method, software, dataset]
+
+  # ---------------------------------------------------------------------------
+  # Главное правило. Булево выражение над id групп ниже.
+  # Поддерживается: and / or / not / скобки.
+  #
+  # Текущее: обязателен геотехнический якорь И (метод AI/ML ИЛИ инструментальный
+  # /дистанционный сигнал), при отсутствии жёстких стоп-слов.
+  #
+  # Хочешь только AI-работы  -> "geo_domain and ai_method and not hard_exclude"
+  # Хочешь всю геотехнику    -> "geo_domain and not hard_exclude"
+  # Хочешь пару обязательных -> заполни группу must_have (mode: all_of) и
+  #                             добавь её в выражение через and.
+  # ---------------------------------------------------------------------------
+  satisfy: "geo_domain and (ai_method or geo_sensing) and not hard_exclude"
+
+  # Порог keyword_score для стадии 1. Элементы ниже порога, но прошедшие
+  # satisfy, помечаются borderline и добираются семантическим гейтом.
+  keyword_score_threshold: 0.35
+  borderline_semantic_threshold: 0.52
+
+# =============================================================================
+# ГРУППЫ ТЕРМИНОВ
+# =============================================================================
+# mode: any_of  — достаточно min_matches попаданий
+# mode: all_of  — нужны все термины группы
+# mode: none_of — ни одного (стоп-лист)
+# fields        — где ищем: title | abstract | keywords | venue | authors_affil
+# weight        — вклад группы в keyword_score
+# hard          — true: срабатывание блокирует безусловно (только для none_of)
+# =============================================================================
+
+groups:
+
+  # ---------------------------------------------------------------------------
+  - id: must_have
+    name: "Обязательные слова (пусто по умолчанию)"
+    mode: all_of
+    min_matches: 0
+    fields: [title, abstract, keywords]
+    weight: 0.0
+    enabled: false
+    comment: >-
+      Резерв под требование «пара слов должна быть обязательно». Например,
+      terms: [{term: soil, match: prefix}] заставит требовать грунт в каждом
+      материале. Включается флагом enabled и добавлением в satisfy.
+    terms: []
+
+  # ---------------------------------------------------------------------------
+  - id: geo_domain
+    name: "Геотехника и инженерная геология (якорь предметной области)"
+    mode: any_of
+    min_matches: 1
+    fields: [title, abstract, keywords]
+    weight: 0.45
+    terms:
+      # --- дисциплины ---------------------------------------------------------
+      - {term: "geotechnical engineering",     match: phrase, weight: 1.0}
+      - {term: "geotechnics",                  match: token,  weight: 1.0}
+      - {term: "engineering geology",          match: phrase, weight: 1.0}
+      - {term: "geomechanics",                 match: token,  weight: 1.0}
+      - {term: "soil mechanics",               match: phrase, weight: 1.0}
+      - {term: "rock mechanics",               match: phrase, weight: 1.0}
+      - {term: "rock engineering",             match: phrase, weight: 0.9}
+      - {term: "geological engineering",       match: phrase, weight: 0.9}
+      - {term: "ground engineering",           match: phrase, weight: 0.8}
+      - {term: "foundation engineering",       match: phrase, weight: 1.0}
+      - {term: "earthquake geotechnical",      match: phrase, weight: 1.0}
+      - {term: "geoenvironmental",             match: prefix, weight: 0.7}
+      # --- объекты и конструкции ---------------------------------------------
+      - {term: "pile foundation",              match: phrase, weight: 1.0}
+      - {term: "piled raft",                   match: phrase, weight: 0.9}
+      - {term: "shallow foundation",           match: phrase, weight: 0.9}
+      - {term: "retaining wall",               match: phrase, weight: 0.9}
+      - {term: "diaphragm wall",               match: phrase, weight: 0.9}
+      - {term: "sheet pile",                   match: phrase, weight: 0.8}
+      - {term: "deep excavation",              match: phrase, weight: 1.0}
+      - {term: "braced excavation",            match: phrase, weight: 0.9}
+      - {term: "tunnel lining",                match: phrase, weight: 0.9}
+      - {term: "tunnel boring",                match: phrase, weight: 0.9}
+      - {term: "shield tunnel",                match: phrase, weight: 0.9}
+      - {term: "underground excavation",       match: phrase, weight: 0.9}
+      - {term: "earth dam",                    match: phrase, weight: 0.9}
+      - {term: "tailings dam",                 match: phrase, weight: 1.0}
+      - {term: "tailings storage facility",    match: phrase, weight: 1.0}
+      - {term: "embankment",                   match: prefix, weight: 0.8}
+      - {term: "geosynthetic",                 match: prefix, weight: 0.8}
+      - {term: "geogrid",                      match: prefix, weight: 0.7}
+      - {term: "reinforced soil",              match: phrase, weight: 0.9}
+      - {term: "railway subgrade",             match: phrase, weight: 0.8}
+      - {term: "pavement subgrade",            match: phrase, weight: 0.8}
+      - {term: "offshore foundation",          match: phrase, weight: 0.9}
+      - {term: "monopile",                     match: prefix, weight: 0.9}
+      - {term: "suction caisson",              match: phrase, weight: 0.9}
+      # --- процессы и явления -------------------------------------------------
+      - {term: "slope stability",              match: phrase, weight: 1.0}
+      - {term: "landslide",                    match: prefix, weight: 1.0}
+      - {term: "rockfall",                     match: prefix, weight: 0.9}
+      - {term: "rock slope",                   match: phrase, weight: 0.9}
+      - {term: "debris flow",                  match: phrase, weight: 0.9}
+      - {term: "liquefac",                     match: prefix, weight: 1.0}
+      - {term: "cyclic mobility",              match: phrase, weight: 0.9}
+      - {term: "consolidation settlement",     match: phrase, weight: 1.0}
+      - {term: "ground settlement",            match: phrase, weight: 1.0}
+      - {term: "differential settlement",      match: phrase, weight: 0.9}
+      - {term: "land subsidence",              match: phrase, weight: 1.0}
+      - {term: "ground subsidence",            match: phrase, weight: 1.0}
+      - {term: "sinkhole",                     match: prefix, weight: 0.9}
+      - {term: "karst",                        match: prefix, weight: 0.9}
+      - {term: "collapsible soil",             match: phrase, weight: 0.9}
+      - {term: "expansive soil",               match: phrase, weight: 0.9}
+      - {term: "swelling soil",                match: phrase, weight: 0.9}
+      - {term: "frost heave",                  match: phrase, weight: 0.9}
+      - {term: "permafrost",                   match: prefix, weight: 1.0}
+      - {term: "thaw settlement",              match: phrase, weight: 0.9}
+      - {term: "soil erosion",                 match: phrase, weight: 0.7}
+      - {term: "internal erosion",             match: phrase, weight: 0.9}
+      - {term: "piping erosion",               match: phrase, weight: 0.9}
+      - {term: "bearing capacity",             match: phrase, weight: 1.0}
+      - {term: "soil-structure interaction",   match: phrase, weight: 1.0}
+      - {term: "soil structure interaction",   match: phrase, weight: 1.0}
+      - {term: "ground improvement",           match: phrase, weight: 1.0}
+      - {term: "soil stabilization",           match: phrase, weight: 0.9}
+      - {term: "grouting",                     match: prefix, weight: 0.8}
+      - {term: "dewatering",                   match: prefix, weight: 0.7}
+      # --- свойства и модели --------------------------------------------------
+      - {term: "shear strength of soil",       match: phrase, weight: 1.0}
+      - {term: "undrained shear strength",     match: phrase, weight: 1.0}
+      - {term: "effective stress",             match: phrase, weight: 0.9}
+      - {term: "pore water pressure",          match: phrase, weight: 1.0}
+      - {term: "pore pressure",                match: phrase, weight: 0.9}
+      - {term: "constitutive model",           match: phrase, weight: 0.9}
+      - {term: "critical state soil",          match: phrase, weight: 1.0}
+      - {term: "hypoplastic",                  match: prefix, weight: 0.9}
+      - {term: "elastoplastic soil",           match: phrase, weight: 0.9}
+      - {term: "unsaturated soil",             match: phrase, weight: 1.0}
+      - {term: "soil water retention",         match: phrase, weight: 0.9}
+      - {term: "soil water characteristic curve", match: phrase, weight: 1.0}
+      - {term: "hydraulic conductivity",       match: phrase, weight: 0.7}
+      - {term: "poromechanic",                 match: prefix, weight: 0.9}
+      - {term: "poroelastic",                  match: prefix, weight: 0.8}
+      - {term: "hydro-mechanical coupling",    match: phrase, weight: 0.9}
+      - {term: "seepage",                      match: prefix, weight: 0.8}
+      - {term: "soil compaction",              match: phrase, weight: 0.7}
+      - {term: "granular material",            match: phrase, weight: 0.6}
+      - {term: "sand behaviour",               match: phrase, weight: 0.6}
+      - {term: "clay behaviour",               match: phrase, weight: 0.6}
+      # --- изыскания и испытания ---------------------------------------------
+      - {term: "site investigation",           match: phrase, weight: 1.0}
+      - {term: "geotechnical investigation",   match: phrase, weight: 1.0}
+      - {term: "ground investigation",         match: phrase, weight: 1.0}
+      - {term: "cone penetration test",        match: phrase, weight: 1.0}
+      - {term: "CPT",                          match: token,  weight: 0.8}
+      - {term: "CPTu",                         match: token,  weight: 1.0}
+      - {term: "standard penetration test",    match: phrase, weight: 1.0}
+      - {term: "SPT",                          match: token,  weight: 0.7}
+      - {term: "borehole log",                 match: phrase, weight: 0.9}
+      - {term: "borehole data",                match: phrase, weight: 0.9}
+      - {term: "triaxial test",                match: phrase, weight: 1.0}
+      - {term: "oedometer",                    match: prefix, weight: 1.0}
+      - {term: "direct shear test",            match: phrase, weight: 0.9}
+      - {term: "pressuremeter",                match: prefix, weight: 0.9}
+      - {term: "vane shear",                   match: phrase, weight: 0.9}
+      - {term: "plate load test",              match: phrase, weight: 0.9}
+      - {term: "geotechnical database",        match: phrase, weight: 1.0}
+      - {term: "geotechnical baseline",        match: phrase, weight: 0.8}
+      # --- нормативка и практика ---------------------------------------------
+      - {term: "Eurocode 7",                   match: phrase, weight: 0.9}
+      - {term: "geotechnical design",          match: phrase, weight: 0.9}
+      - {term: "geotechnical risk",            match: phrase, weight: 1.0}
+      - {term: "geohazard",                    match: prefix, weight: 1.0}
+      - {term: "ground model",                 match: phrase, weight: 0.8}
+      - {term: "geological model",             match: phrase, weight: 0.7}
+      - {term: "stratigraphic interpretation", match: phrase, weight: 0.8}
+      # --- русский ------------------------------------------------------------
+      - {term: "инженерная геология",          match: phrase, lang: ru, weight: 1.0}
+      - {term: "инженерно-геологическ",        match: prefix, lang: ru, weight: 1.0}
+      - {term: "геотехник",                    match: prefix, lang: ru, weight: 1.0}
+      - {term: "механика грунтов",             match: phrase, lang: ru, weight: 1.0}
+      - {term: "механика горных пород",        match: phrase, lang: ru, weight: 1.0}
+      - {term: "основания и фундаменты",       match: phrase, lang: ru, weight: 1.0}
+      - {term: "свайн",                        match: prefix, lang: ru, weight: 0.8}
+      - {term: "несущая способность",          match: phrase, lang: ru, weight: 0.9}
+      - {term: "устойчивость склон",           match: prefix, lang: ru, weight: 1.0}
+      - {term: "оползн",                       match: prefix, lang: ru, weight: 1.0}
+      - {term: "разжижение грунт",             match: prefix, lang: ru, weight: 1.0}
+      - {term: "просадочн",                    match: prefix, lang: ru, weight: 0.9}
+      - {term: "карст",                        match: prefix, lang: ru, weight: 0.9}
+      - {term: "многолетнемёрзл",              match: prefix, lang: ru, weight: 1.0}
+      - {term: "вечная мерзлота",              match: phrase, lang: ru, weight: 1.0}
+      - {term: "поровое давление",             match: phrase, lang: ru, weight: 1.0}
+      - {term: "осадка фундамент",             match: prefix, lang: ru, weight: 1.0}
+      - {term: "изыскани",                     match: prefix, lang: ru, weight: 0.8}
+      - {term: "статическое зондирование",     match: phrase, lang: ru, weight: 1.0}
+      - {term: "хвостохранилищ",               match: prefix, lang: ru, weight: 1.0}
+      - {term: "выработк",                     match: prefix, lang: ru, weight: 0.5}
+
+  # ---------------------------------------------------------------------------
+  - id: ai_method
+    name: "AI / ML / физически информированное моделирование"
+    mode: any_of
+    min_matches: 1
+    fields: [title, abstract, keywords]
+    weight: 0.35
+    terms:
+      # --- общее --------------------------------------------------------------
+      - {term: "machine learning",             match: phrase, weight: 1.0}
+      - {term: "deep learning",                match: phrase, weight: 1.0}
+      - {term: "artificial intelligence",      match: phrase, weight: 0.9}
+      - {term: "neural network",               match: phrase, weight: 1.0}
+      - {term: "data-driven model",            match: phrase, weight: 0.9}
+      - {term: "data driven",                  match: phrase, weight: 0.6}
+      - {term: "supervised learning",          match: phrase, weight: 0.8}
+      - {term: "self-supervised",              match: phrase, weight: 1.0}
+      - {term: "semi-supervised",              match: phrase, weight: 0.8}
+      - {term: "unsupervised learning",        match: phrase, weight: 0.8}
+      - {term: "representation learning",      match: phrase, weight: 0.9}
+      - {term: "transfer learning",            match: phrase, weight: 0.9}
+      - {term: "domain adaptation",            match: phrase, weight: 0.9}
+      - {term: "active learning",              match: phrase, weight: 0.9}
+      - {term: "few-shot",                     match: phrase, weight: 0.8}
+      - {term: "reinforcement learning",       match: phrase, weight: 0.9}
+      - {term: "federated learning",           match: phrase, weight: 0.7}
+      # --- архитектуры --------------------------------------------------------
+      - {term: "transformer",                  match: prefix, weight: 0.8}
+      - {term: "attention mechanism",          match: phrase, weight: 0.7}
+      - {term: "graph neural network",         match: phrase, weight: 1.0}
+      - {term: "GNN",                          match: token,  weight: 0.9}
+      - {term: "convolutional neural",         match: phrase, weight: 0.8}
+      - {term: "recurrent neural",             match: phrase, weight: 0.7}
+      - {term: "LSTM",                         match: token,  weight: 0.7}
+      - {term: "state space model",            match: phrase, weight: 0.9}
+      - {term: "diffusion model",              match: phrase, weight: 0.9}
+      - {term: "generative model",             match: phrase, weight: 0.8}
+      - {term: "variational autoencoder",      match: phrase, weight: 0.8}
+      - {term: "gaussian process",             match: phrase, weight: 0.9}
+      - {term: "random forest",                match: phrase, weight: 0.7}
+      - {term: "gradient boosting",            match: phrase, weight: 0.7}
+      - {term: "XGBoost",                      match: token,  weight: 0.7}
+      - {term: "support vector machine",       match: phrase, weight: 0.6}
+      - {term: "symbolic regression",          match: phrase, weight: 0.9}
+      # --- LLM / foundation ---------------------------------------------------
+      - {term: "foundation model",             match: phrase, weight: 1.0}
+      - {term: "large language model",         match: phrase, weight: 1.0}
+      - {term: "LLM",                          match: token,  weight: 0.9}
+      - {term: "retrieval augmented generation", match: phrase, weight: 0.9}
+      - {term: "knowledge graph",              match: phrase, weight: 0.8}
+      - {term: "agentic",                      match: prefix, weight: 0.7}
+      - {term: "multimodal",                   match: prefix, weight: 0.8}
+      - {term: "vision language model",        match: phrase, weight: 0.8}
+      # --- physics-informed / суррогаты --------------------------------------
+      - {term: "physics-informed",             match: phrase, weight: 1.0}
+      - {term: "physics informed",             match: phrase, weight: 1.0}
+      - {term: "PINN",                         match: token,  weight: 1.0}
+      - {term: "neural operator",              match: phrase, weight: 1.0}
+      - {term: "DeepONet",                     match: token,  weight: 1.0}
+      - {term: "Fourier neural operator",      match: phrase, weight: 1.0}
+      - {term: "neural ODE",                   match: phrase, weight: 0.9}
+      - {term: "differentiable simulation",    match: phrase, weight: 1.0}
+      - {term: "differentiable physics",       match: phrase, weight: 1.0}
+      - {term: "surrogate model",              match: phrase, weight: 1.0}
+      - {term: "reduced order model",          match: phrase, weight: 0.9}
+      - {term: "metamodel",                    match: prefix, weight: 0.8}
+      - {term: "emulator",                     match: prefix, weight: 0.7}
+      - {term: "hybrid modelling",             match: phrase, weight: 0.8}
+      - {term: "scientific machine learning",  match: phrase, weight: 1.0}
+      - {term: "operator learning",            match: phrase, weight: 1.0}
+      - {term: "model discovery",              match: phrase, weight: 0.9}
+      # --- неопределённость и надёжность -------------------------------------
+      - {term: "uncertainty quantification",   match: phrase, weight: 1.0}
+      - {term: "bayesian inference",           match: phrase, weight: 0.9}
+      - {term: "bayesian calibration",         match: phrase, weight: 0.9}
+      - {term: "bayesian update",              match: prefix, weight: 0.9}
+      - {term: "markov chain monte carlo",     match: phrase, weight: 0.8}
+      - {term: "conformal prediction",         match: phrase, weight: 0.9}
+      - {term: "out-of-distribution",          match: phrase, weight: 0.8}
+      - {term: "reliability analysis",         match: phrase, weight: 0.9}
+      - {term: "probabilistic model",          match: phrase, weight: 0.7}
+      - {term: "explainable",                  match: prefix, weight: 0.8}
+      - {term: "interpretable model",          match: phrase, weight: 0.8}
+      - {term: "SHAP",                         match: token,  weight: 0.6}
+      # --- прикладное ---------------------------------------------------------
+      - {term: "digital twin",                 match: phrase, weight: 1.0}
+      - {term: "data assimilation",            match: phrase, weight: 0.9}
+      - {term: "anomaly detection",            match: phrase, weight: 0.9}
+      - {term: "change detection",             match: phrase, weight: 0.8}
+      - {term: "time series forecasting",      match: phrase, weight: 0.9}
+      - {term: "semantic segmentation",        match: phrase, weight: 0.8}
+      - {term: "instance segmentation",        match: phrase, weight: 0.7}
+      - {term: "object detection",             match: phrase, weight: 0.6}
+      - {term: "computer vision",              match: phrase, weight: 0.7}
+      - {term: "point cloud learning",         match: phrase, weight: 0.9}
+      - {term: "inverse problem",              match: phrase, weight: 0.8}
+      - {term: "optimization algorithm",       match: phrase, weight: 0.5}
+      - {term: "benchmark dataset",            match: phrase, weight: 0.7}
+      # --- русский ------------------------------------------------------------
+      - {term: "машинное обучение",            match: phrase, lang: ru, weight: 1.0}
+      - {term: "глубокое обучение",            match: phrase, lang: ru, weight: 1.0}
+      - {term: "нейронн",                      match: prefix, lang: ru, weight: 0.9}
+      - {term: "искусственный интеллект",      match: phrase, lang: ru, weight: 0.9}
+      - {term: "физически информированн",      match: prefix, lang: ru, weight: 1.0}
+      - {term: "суррогатн",                    match: prefix, lang: ru, weight: 0.9}
+      - {term: "цифровой двойник",             match: phrase, lang: ru, weight: 1.0}
+      - {term: "оценка неопределённост",       match: prefix, lang: ru, weight: 0.9}
+      - {term: "байесовск",                    match: prefix, lang: ru, weight: 0.8}
+
+  # ---------------------------------------------------------------------------
+  - id: geo_sensing
+    name: "Мониторинг, геофизика и дистанционное зондирование"
+    mode: any_of
+    min_matches: 1
+    fields: [title, abstract, keywords]
+    weight: 0.20
+    comment: >-
+      Альтернативный вход в satisfy: инструментальная работа по геотехническому
+      объекту релевантна и без явного упоминания ML.
+    terms:
+      - {term: "structural health monitoring", match: phrase, weight: 0.9}
+      - {term: "geotechnical monitoring",      match: phrase, weight: 1.0}
+      - {term: "deformation monitoring",       match: phrase, weight: 1.0}
+      - {term: "displacement monitoring",      match: phrase, weight: 0.9}
+      - {term: "early warning system",         match: phrase, weight: 0.9}
+      - {term: "InSAR",                        match: token,  weight: 1.0}
+      - {term: "interferometric synthetic aperture", match: phrase, weight: 1.0}
+      - {term: "PSInSAR",                      match: token,  weight: 1.0}
+      - {term: "DInSAR",                       match: token,  weight: 1.0}
+      - {term: "SBAS",                         match: token,  weight: 0.7}
+      - {term: "LiDAR",                        match: token,  weight: 0.9}
+      - {term: "terrestrial laser scanning",   match: phrase, weight: 0.9}
+      - {term: "photogrammetry",               match: prefix, weight: 0.8}
+      - {term: "point cloud",                  match: phrase, weight: 0.7}
+      - {term: "digital elevation model",      match: phrase, weight: 0.8}
+      - {term: "UAV",                          match: token,  weight: 0.7}
+      - {term: "unmanned aerial",              match: phrase, weight: 0.7}
+      - {term: "remote sensing",               match: phrase, weight: 0.8}
+      - {term: "GNSS",                         match: token,  weight: 0.8}
+      - {term: "ground penetrating radar",     match: phrase, weight: 1.0}
+      - {term: "GPR",                          match: token,  weight: 0.8}
+      - {term: "electrical resistivity tomography", match: phrase, weight: 1.0}
+      - {term: "ERT",                          match: token,  weight: 0.6}
+      - {term: "induced polarization",         match: phrase, weight: 0.8}
+      - {term: "seismic refraction",           match: phrase, weight: 0.9}
+      - {term: "surface wave",                 match: phrase, weight: 0.7}
+      - {term: "MASW",                         match: token,  weight: 0.9}
+      - {term: "shear wave velocity",          match: phrase, weight: 1.0}
+      - {term: "ambient noise tomography",     match: phrase, weight: 0.8}
+      - {term: "microseismic",                 match: prefix, weight: 0.9}
+      - {term: "full waveform inversion",      match: phrase, weight: 0.8}
+      - {term: "distributed acoustic sensing", match: phrase, weight: 1.0}
+      - {term: "distributed fiber optic",      match: phrase, weight: 1.0}
+      - {term: "fibre optic sensing",          match: phrase, weight: 1.0}
+      - {term: "inclinometer",                 match: prefix, weight: 1.0}
+      - {term: "extensometer",                 match: prefix, weight: 1.0}
+      - {term: "piezometer",                   match: prefix, weight: 1.0}
+      - {term: "settlement gauge",             match: phrase, weight: 0.9}
+      - {term: "strain gauge",                 match: phrase, weight: 0.6}
+      - {term: "sensor fusion",                match: phrase, weight: 0.7}
+      - {term: "геотехнический мониторинг",    match: phrase, lang: ru, weight: 1.0}
+      - {term: "мониторинг деформац",          match: prefix, lang: ru, weight: 1.0}
+      - {term: "георадар",                     match: prefix, lang: ru, weight: 0.9}
+      - {term: "электротомограф",              match: prefix, lang: ru, weight: 0.9}
+      - {term: "сейсморазведк",                match: prefix, lang: ru, weight: 0.8}
+      - {term: "дистанционное зондирование",   match: phrase, lang: ru, weight: 0.8}
+
+  # ---------------------------------------------------------------------------
+  - id: quality_signal
+    name: "Сигналы качества (не участвуют в satisfy, только в score)"
+    mode: any_of
+    min_matches: 1
+    fields: [title, abstract, keywords]
+    weight: 0.15
+    affects_satisfy: false
+    terms:
+      - {term: "open source",                  match: phrase, weight: 1.0}
+      - {term: "open-source",                  match: phrase, weight: 1.0}
+      - {term: "publicly available",           match: phrase, weight: 0.9}
+      - {term: "code is available",            match: phrase, weight: 1.0}
+      - {term: "we release",                   match: phrase, weight: 0.9}
+      - {term: "reproducib",                   match: prefix, weight: 0.9}
+      - {term: "benchmark",                    match: prefix, weight: 0.8}
+      - {term: "field data",                   match: phrase, weight: 1.0}
+      - {term: "field validation",             match: phrase, weight: 1.0}
+      - {term: "case study",                   match: phrase, weight: 0.7}
+      - {term: "in situ measurement",          match: phrase, weight: 0.9}
+      - {term: "full-scale test",              match: phrase, weight: 1.0}
+      - {term: "centrifuge test",              match: phrase, weight: 0.9}
+      - {term: "real-world deployment",        match: phrase, weight: 1.0}
+      - {term: "ablation study",               match: phrase, weight: 0.7}
+      - {term: "cross-validation",             match: phrase, weight: 0.5}
+      - {term: "dataset of",                   match: phrase, weight: 0.7}
+
+  # ---------------------------------------------------------------------------
+  - id: hard_exclude
+    name: "Жёсткие стоп-слова (блокируют безусловно)"
+    mode: none_of
+    hard: true
+    fields: [title]
+    weight: 0.0
+    comment: >-
+      Только title и только однозначные случаи: в abstract эти слова часто
+      встречаются в валидных геотехнических работах.
+    terms:
+      - {term: "soil microbiome",              match: phrase}
+      - {term: "soil microbial",               match: phrase}
+      - {term: "soil fertility",               match: phrase}
+      - {term: "crop yield",                   match: phrase}
+      - {term: "crop growth",                  match: phrase}
+      - {term: "agronom",                      match: prefix}
+      - {term: "fertilizer",                   match: prefix}
+      - {term: "soil organic carbon sequestration", match: phrase}
+      - {term: "phytoremediation",             match: prefix}
+      - {term: "protein folding",              match: phrase}
+      - {term: "drug discovery",               match: phrase}
+      - {term: "cancer",                       match: prefix}
+      - {term: "electroencephalo",             match: prefix}
+      - {term: "stock market",                 match: phrase}
+      - {term: "cryptocurrenc",                match: prefix}
+      - {term: "blockchain",                   match: prefix}
+      - {term: "recommender system",           match: phrase}
+      - {term: "sentiment analysis",           match: phrase}
+      - {term: "geopolitic",                   match: prefix}
+      - {term: "battery electrode",            match: phrase}
+      - {term: "photovoltaic cell",            match: phrase}
+      - {term: "bibliometric",                 match: prefix}
+      - {term: "scientometric",                match: prefix}
+      - {term: "editorial",                    match: token}
+      - {term: "erratum",                      match: token}
+      - {term: "corrigendum",                  match: token}
+      - {term: "retracted",                    match: prefix}
+
+  # ---------------------------------------------------------------------------
+  - id: soft_exclude
+    name: "Мягкие стоп-слова (штраф к keyword_score)"
+    mode: none_of
+    hard: false
+    penalty: 0.25
+    fields: [title, abstract]
+    terms:
+      - {term: "planetary soil",               match: phrase}
+      - {term: "lunar regolith",               match: phrase}
+      - {term: "martian",                      match: prefix}
+      - {term: "asteroid",                     match: prefix}
+      - {term: "food security",                match: phrase}
+      - {term: "precision agriculture",        match: phrase}
+      - {term: "review of literature",         match: phrase}
+
+# =============================================================================
+# ЗАПРОСЫ К ИСТОЧНИКАМ
+# =============================================================================
+# Генерация: {geo} и {ai} подставляются как OR-скобки топ-N терминов группы
+# (по weight), с учётом синтаксиса конкретного провайдера. Явный query
+# перекрывает шаблон. enabled/priority/max_items редактируются в админке.
+# =============================================================================
+
+sources:
+
+  arxiv:
+    enabled: true
+    max_items_per_run: 300
+    lookback_hours: 192          # arXiv не даёт фильтр по дате в API — режем сами
+    categories: [cs.LG, cs.CV, cs.AI, physics.geo-ph, stat.ML, math.NA, cs.CE, eess.SP]
+    queries:
+      - {id: ax_geo_ai,     enabled: true, priority: 10, query: 'abs:"geotechnical" AND (abs:"machine learning" OR abs:"neural" OR abs:"deep learning")'}
+      - {id: ax_soil_ml,    enabled: true, priority: 10, query: '(abs:"soil mechanics" OR abs:"soil behaviour" OR abs:"granular material") AND (abs:"machine learning" OR abs:"neural operator" OR abs:"physics-informed")'}
+      - {id: ax_slope,      enabled: true, priority: 9,  query: '(abs:"landslide" OR abs:"slope stability" OR abs:"rockfall") AND (abs:"deep learning" OR abs:"machine learning" OR abs:"InSAR")'}
+      - {id: ax_liq,        enabled: true, priority: 9,  query: 'abs:"liquefaction" AND (abs:"machine learning" OR abs:"neural network" OR abs:"probabilistic")'}
+      - {id: ax_pinn_geo,   enabled: true, priority: 9,  query: '(abs:"physics-informed" OR abs:"neural operator" OR abs:"differentiable simulation") AND (abs:"porous" OR abs:"geomechanics" OR abs:"subsurface" OR abs:"soil")'}
+      - {id: ax_subsurface, enabled: true, priority: 8,  query: '(abs:"subsurface" OR abs:"borehole" OR abs:"stratigraph") AND (abs:"machine learning" OR abs:"generative" OR abs:"foundation model")'}
+      - {id: ax_insar,      enabled: true, priority: 8,  query: '(abs:"InSAR" OR abs:"ground deformation" OR abs:"subsidence") AND (abs:"deep learning" OR abs:"time series")'}
+      - {id: ax_tunnel,     enabled: true, priority: 7,  query: '(abs:"tunnel" OR abs:"excavation" OR abs:"TBM") AND (abs:"machine learning" OR abs:"prediction")'}
+      - {id: ax_dem,        enabled: true, priority: 7,  query: '(abs:"discrete element method" OR abs:"granular flow") AND (abs:"graph neural network" OR abs:"learned simulator" OR abs:"surrogate")'}
+      - {id: ax_uq_geo,     enabled: true, priority: 7,  query: '(abs:"uncertainty quantification" OR abs:"bayesian") AND (abs:"geotechnical" OR abs:"slope" OR abs:"foundation" OR abs:"soil")'}
+
+  openalex:
+    enabled: true
+    max_items_per_run: 400
+    lookback_hours: 192
+    # concepts/topics используются как дополнительный фильтр к полнотекстовому поиску
+    concepts: ["Geotechnical engineering", "Engineering geology", "Soil science", "Remote sensing", "Machine learning"]
+    filters:
+      from_publication_date: auto      # auto = now - lookback
+      type: ["article", "preprint", "review"]
+      has_abstract: true
+      language: ["en", "ru"]
+    queries:
+      - {id: oa_geo_ai,   enabled: true, priority: 10, query: '(geotechnical OR "engineering geology" OR "soil mechanics") AND ("machine learning" OR "deep learning" OR "neural network")'}
+      - {id: oa_hazard,   enabled: true, priority: 9,  query: '(landslide OR subsidence OR liquefaction OR "slope stability") AND ("machine learning" OR "deep learning" OR InSAR)'}
+      - {id: oa_pinn,     enabled: true, priority: 9,  query: '("physics-informed neural" OR "neural operator" OR "surrogate model") AND (geomechanics OR poromechanics OR "porous media" OR soil)'}
+      - {id: oa_monitor,  enabled: true, priority: 8,  query: '("geotechnical monitoring" OR "structural health monitoring" OR "distributed fiber optic") AND ("machine learning" OR "anomaly detection")'}
+      - {id: oa_site,     enabled: true, priority: 8,  query: '("site investigation" OR "cone penetration test" OR "borehole") AND ("machine learning" OR interpolation OR "generative")'}
+      - {id: oa_dt,       enabled: true, priority: 7,  query: '"digital twin" AND (geotechnical OR tunnel OR dam OR foundation OR "earth structure")'}
+      - {id: oa_ru,       enabled: true, priority: 6,  query: '("инженерная геология" OR геотехника OR "механика грунтов") AND ("машинное обучение" OR "нейронн")'}
+
+  crossref:
+    enabled: true
+    max_items_per_run: 300
+    lookback_hours: 192
+    filters:
+      type: ["journal-article", "proceedings-article", "posted-content"]
+      has_abstract: true
+    # Приоритетные журналы: их выдача проходит с пониженным порогом keyword_score
+    priority_containers:
+      - "Geotechnique"
+      - "Canadian Geotechnical Journal"
+      - "Journal of Geotechnical and Geoenvironmental Engineering"
+      - "Computers and Geotechnics"
+      - "Acta Geotechnica"
+      - "Engineering Geology"
+      - "Bulletin of Engineering Geology and the Environment"
+      - "Landslides"
+      - "Soils and Foundations"
+      - "Georisk"
+      - "Tunnelling and Underground Space Technology"
+      - "International Journal of Rock Mechanics and Mining Sciences"
+      - "Rock Mechanics and Rock Engineering"
+      - "Journal of Rock Mechanics and Geotechnical Engineering"
+      - "Computers & Geosciences"
+      - "Geoscience Frontiers"
+    queries:
+      - {id: cr_geo_ai,  enabled: true, priority: 10, query: 'geotechnical machine learning'}
+      - {id: cr_geo_dl,  enabled: true, priority: 9,  query: 'engineering geology deep learning'}
+      - {id: cr_pinn,    enabled: true, priority: 9,  query: 'physics-informed neural network soil'}
+      - {id: cr_ls,      enabled: true, priority: 8,  query: 'landslide susceptibility deep learning'}
+      - {id: cr_cpt,     enabled: true, priority: 8,  query: 'cone penetration test machine learning'}
+
+  semantic_scholar:
+    enabled: true
+    role: enricher                # обогащение citations/tldr/references, не первичный сбор
+    max_items_per_run: 500
+
+  github:
+    enabled: true
+    max_items_per_run: 100
+    lookback_hours: 336
+    filters:
+      min_stars: 5
+      pushed_within_days: 400
+      exclude_forks: true
+      exclude_archived: true
+    queries:
+      - {id: gh_geotech_ml, enabled: true, priority: 10, query: 'geotechnical machine learning in:name,description,readme'}
+      - {id: gh_pinn_geo,   enabled: true, priority: 9,  query: 'physics-informed neural network porous OR geomechanics'}
+      - {id: gh_landslide,  enabled: true, priority: 9,  query: 'landslide susceptibility model'}
+      - {id: gh_cpt,        enabled: true, priority: 8,  query: 'cone penetration test soil classification'}
+      - {id: gh_insar,      enabled: true, priority: 8,  query: 'InSAR time series deformation'}
+      - {id: gh_fem_diff,   enabled: true, priority: 7,  query: 'differentiable finite element simulation'}
+      - {id: gh_dem,        enabled: true, priority: 7,  query: 'discrete element method granular simulation'}
+
+  huggingface:
+    enabled: false                # включить после появления профильных датасетов
+    max_items_per_run: 50
+    queries:
+      - {id: hf_geo, enabled: true, priority: 5, query: 'geotechnical OR borehole OR landslide OR subsurface'}
+
+# =============================================================================
+# ВОРОНКА
+# =============================================================================
+funnel:
+  stage_1_keyword_gate:
+    description: "Детерминированный матчинг satisfy + keyword_score. Без сети и LLM."
+    outcomes: [accepted, borderline, rejected]
+  stage_2_semantic_gate:
+    description: "Эмбеддинг материала vs эмбеддинг harvest-профиля. Спасает borderline."
+    threshold_ref: profile.borderline_semantic_threshold
+  stage_3_global_llm_score:
+    description: "Light LLM даёт глобальную научную оценку RankResult. Только для прошедших 1-2."
+    model_role: ranker
+  stage_4_deep_analysis:
+    description: "Heavy LLM разбирает материал. Только выше deep_analysis_threshold."
+    model_role: analyzer
+  stage_5_personalization:
+    description: "Отдельный флоу на подписчика: semantic + reranker + global + interests."

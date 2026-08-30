@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from geonexa_proxima.db.models import (
     AuthorModel,
     DatasetModel,
-    FeedbackModel,
     ItemAuthorModel,
     ItemDatasetModel,
     ItemModel,
@@ -26,14 +25,13 @@ from geonexa_proxima.db.models import (
     ItemTopicModel,
     RepositoryModel,
     TopicModel,
-    UserModel,
 )
 from geonexa_proxima.db.session import SessionFactory
 from geonexa_proxima.domain import (
     Author,
     CollectedItem,
     DeepAnalysis,
-    FeedbackKind,
+    NotFoundError,
     RankResult,
     StoredItem,
 )
@@ -42,7 +40,7 @@ _WHITESPACE = re.compile(r"\s+")
 _ARXIV_VERSION = re.compile(r"v\d+$", re.IGNORECASE)
 
 
-class ItemNotFoundError(LookupError):
+class ItemNotFoundError(NotFoundError):
     """Запрошенный канонический объект отсутствует."""
 
 
@@ -205,36 +203,6 @@ class SQLAlchemyItemRepository:
         async with self._session_factory() as session:
             model = await session.get(ItemModel, item_id)
             return self._to_domain(model) if model else None
-
-    async def save_feedback(
-        self,
-        external_user_id: int,
-        item_id: UUID,
-        kind: FeedbackKind,
-        context: dict[str, object] | None = None,
-    ) -> None:
-        """Persist Telegram feedback, creating the local user on first action."""
-
-        async with self._session_factory() as session, session.begin():
-            if await session.get(ItemModel, item_id) is None:
-                raise ItemNotFoundError(f"item {item_id} not found")
-            user_statement = insert(UserModel).values(external_user_id=external_user_id)
-            user_id = (
-                await session.execute(
-                    user_statement.on_conflict_do_update(
-                        index_elements=[UserModel.external_user_id],
-                        set_={"external_user_id": user_statement.excluded.external_user_id},
-                    ).returning(UserModel.id)
-                )
-            ).scalar_one()
-            session.add(
-                FeedbackModel(
-                    user_id=user_id,
-                    item_id=item_id,
-                    kind=kind.value,
-                    context=_json_payload(context or {}),
-                )
-            )
 
     async def _update_existing(self, item_id: UUID, **values: Any) -> None:
         values["updated_at"] = func.now()

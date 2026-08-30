@@ -1,0 +1,156 @@
+"""Проверки keyword-gate на реальных формулировках заголовков."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from geonexa_proxima.harvest import (
+    Decision,
+    HarvestMatcher,
+    HarvestProfile,
+    load_harvest_profile,
+    normalize,
+)
+
+PROFILE_PATH = Path("config/harvest.yaml")
+
+RELEVANT = [
+    (
+        "Physics-informed neural networks for undrained shear strength prediction from CPT data",
+        "A PINN fuses cone penetration test soundings with a critical state soil model.",
+    ),
+    (
+        "Deep learning landslide susceptibility mapping using InSAR time series",
+        "A convolutional network is trained on interferometric deformation series.",
+    ),
+    (
+        "A graph neural network surrogate for discrete element method simulations",
+        "We learn a simulator for granular material flow; code is available.",
+    ),
+    (
+        "Bayesian calibration of a hypoplastic constitutive model for sand",
+        "Uncertainty quantification on triaxial test data under cyclic loading.",
+    ),
+    (
+        "Distributed fiber optic sensing for deformation monitoring of a tailings dam",
+        "",
+    ),
+    (
+        "Нейросетевая оценка разжижения грунтов по данным статического зондирования",
+        "Машинное обучение применено к инженерно-геологическим изысканиям.",
+    ),
+    (
+        "Neural operator learning for coupled hydro-mechanical modelling of porous media",
+        "DeepONet applied to poromechanics and seepage in an earth dam.",
+    ),
+    (
+        "Digital twin of a deep excavation with real-time model updating",
+        "Inclinometer data drives the update loop.",
+    ),
+]
+
+IRRELEVANT = [
+    ("Deep learning for protein folding prediction", "AlphaFold-style model."),
+    ("Soil microbiome diversity under different fertilizer regimes", "Crop yield study."),
+    ("Transformer architectures for sentiment analysis of product reviews", ""),
+    (
+        "A bibliometric review of machine learning in geotechnical engineering",
+        "Publication trends.",
+    ),
+    ("Lunar regolith excavation with autonomous robots", "Planetary soil handling."),
+    ("Slope stability analysis using limit equilibrium methods", "No learning component."),
+]
+
+
+@pytest.fixture(scope="module")
+def profile() -> HarvestProfile:
+    return load_harvest_profile(PROFILE_PATH)
+
+
+@pytest.fixture(scope="module")
+def matcher(profile: HarvestProfile) -> HarvestMatcher:
+    return HarvestMatcher(profile)
+
+
+def test_profile_loads_expected_groups(profile: HarvestProfile) -> None:
+    keys = {group.key for group in profile.groups}
+    assert {"geo_domain", "ai_method", "geo_sensing", "hard_exclude"} <= keys
+    assert profile.satisfy_expr
+    assert 0 < profile.keyword_score_threshold < 1
+
+
+@pytest.mark.parametrize(("title", "abstract"), RELEVANT)
+def test_relevant_items_pass(matcher: HarvestMatcher, title: str, abstract: str) -> None:
+    result = matcher.match(title, abstract)
+    assert result.decision is not Decision.REJECTED, matcher.explain(result)
+    assert result.satisfied
+
+
+@pytest.mark.parametrize(("title", "abstract"), IRRELEVANT)
+def test_irrelevant_items_are_rejected(matcher: HarvestMatcher, title: str, abstract: str) -> None:
+    result = matcher.match(title, abstract)
+    assert result.decision is Decision.REJECTED, matcher.explain(result)
+
+
+def test_hard_exclude_blocks_regardless_of_domain_hits(matcher: HarvestMatcher) -> None:
+    result = matcher.match(
+        "Soil fertility and machine learning for geotechnical engineering",
+        "Combines soil mechanics vocabulary with agronomy.",
+    )
+    assert result.decision is Decision.REJECTED
+    assert result.blocked_by == "hard_exclude"
+
+
+def test_matched_terms_are_reported(matcher: HarvestMatcher) -> None:
+    result = matcher.match("Machine learning for liquefaction triggering assessment")
+    assert "geo_domain" in result.matched_terms
+    assert "ai_method" in result.matched_terms
+
+
+def test_score_grows_with_evidence(matcher: HarvestMatcher) -> None:
+    weak = matcher.match("Machine learning for slope stability")
+    strong = matcher.match(
+        "Physics-informed graph neural network for slope stability and landslide runout",
+        "Validated on field data from instrumented slopes; open source code and dataset.",
+    )
+    assert strong.keyword_score > weak.keyword_score
+
+
+def test_normalize_handles_hyphens_and_case() -> None:
+    assert normalize("Physics‑Informed  Neural-Networks!") == "physics informed neural networks"
+
+
+def test_satisfy_rejects_unknown_group(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.yaml"
+    broken.write_text(
+        "profile:\n"
+        "  key: t\n"
+        "  name: t\n"
+        "  satisfy: 'geo_domain and nonexistent'\n"
+        "groups:\n"
+        "  - id: geo_domain\n"
+        "    mode: any_of\n"
+        "    terms: [{term: soil, match: token}]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unknown group"):
+        load_harvest_profile(broken)
+
+
+def test_satisfy_rejects_arbitrary_code(tmp_path: Path) -> None:
+    broken = tmp_path / "unsafe.yaml"
+    broken.write_text(
+        "profile:\n"
+        "  key: t\n"
+        "  name: t\n"
+        '  satisfy: \'__import__("os").system("id")\'\n'
+        "groups:\n"
+        "  - id: geo_domain\n"
+        "    mode: any_of\n"
+        "    terms: [{term: soil, match: token}]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_harvest_profile(broken)

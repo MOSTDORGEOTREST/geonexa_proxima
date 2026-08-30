@@ -37,7 +37,6 @@ poetry.toml
 .env.local
 .env.*.local
 !.env.example
-!.env.test
 .envrc
 *.pem
 *.key
@@ -109,6 +108,16 @@ models/*
 !models/.gitkeep
 !models/README.md
 
+# Node и сборка админки
+node_modules/
+# Vite оставляет их после каждого запуска и не убирает за собой
+vite.config.*.timestamp-*
+.svelte-kit/
+admin-ui/build/
+.npm/
+npm-debug.log*
+.eslintcache
+
 # Editors and OS
 .DS_Store
 ._*
@@ -130,3 +139,6 @@ qdrant_data/
 .prefect/
 .postgres/
 prefect.db
+
+# Отложено на удаление: старые версии файлов, архивы переноса
+_to_delete/

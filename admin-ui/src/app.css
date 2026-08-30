@@ -1,0 +1,415 @@
+/* Дизайн-код Проксимы. Токены взяты с сайта ГЕОНЕКСЫ без пересчёта —
+   см. docs/design.md. Тёмная тема — навь сайта, светлая — крем; тёмные
+   значения объявлены отдельно, а не выведены инверсией. */
+
+:root {
+  --navy: #0d1420;
+  --navy-2: #141b2a;
+  --navy-3: #1b2436;
+  --ink: #f4efe4;
+  --ink-dim: rgba(244, 239, 228, 0.72);
+  --mut: rgba(244, 239, 228, 0.55);
+  --line: rgba(244, 239, 228, 0.13);
+  --line-soft: rgba(244, 239, 228, 0.06);
+
+  --paper: #f2ecdf;
+  --paper-2: #e9e1cf;
+  --paper-card: #fbf8f1;
+  --ink-d: #221a0e;
+  --ink-d-dim: rgba(34, 26, 14, 0.68);
+  --mut-d: rgba(34, 26, 14, 0.52);
+  --line-d: rgba(34, 26, 14, 0.16);
+  --line-d-soft: rgba(34, 26, 14, 0.09);
+
+  --amber: #e8a33d;
+  --amber-hi: #ffc96b;
+  --amber-d: #a66a14;
+  --amber-deep: #8f5a10;
+  --emerald: #5db585;
+  --emerald-hi: #a6d9be;
+  --emerald-d: #0a6e36;
+
+  --font-d: 'Unbounded', system-ui, sans-serif;
+  --font-s: 'Inter', system-ui, sans-serif;
+  --font-m: 'JetBrains Mono', ui-monospace, monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --wrap: min(1600px, 96vw);
+  --row: 38px;
+  --gap: 12px;
+  --r-card: 16px;
+  --r-panel: 20px;
+  --r-field: 10px;
+  --r-pill: 99px;
+  --dur: 0.18s;
+
+  /* Роли поверхностей. Тёмная тема — значение по умолчанию. */
+  --bg: var(--navy);
+  --surface: var(--navy-2);
+  --surface-2: var(--navy-3);
+  --text: var(--ink);
+  --text-dim: var(--ink-dim);
+  --muted: var(--mut);
+  --border: var(--line);
+  --border-soft: var(--line-soft);
+  --accent: var(--amber);
+  --accent-strong: var(--amber-hi);
+
+  --viz-surface: #141b2a;
+  --viz-grid: rgba(244, 239, 228, 0.09);
+  --viz-axis: rgba(244, 239, 228, 0.2);
+  --s1: #c38316;
+  --s2: #007839;
+  --s3: #00729b;
+
+  --good: #4f9d69;
+  --warning: #d99a2b;
+  --critical: #c4553d;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: var(--paper);
+  --surface: var(--paper-card);
+  --surface-2: var(--paper-2);
+  --text: var(--ink-d);
+  --text-dim: var(--ink-d-dim);
+  --muted: var(--mut-d);
+  --border: var(--line-d);
+  --border-soft: var(--line-d-soft);
+  --accent: var(--amber-d);
+  --accent-strong: var(--amber-deep);
+
+  --viz-surface: #fbf8f1;
+  --viz-grid: rgba(34, 26, 14, 0.1);
+  --viz-axis: rgba(34, 26, 14, 0.22);
+  --s1: #e8a33d;
+  --s2: #0a6e36;
+  --s3: #168ebf;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-s);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-d);
+  margin: 0;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+h1 {
+  font-weight: 800;
+  font-size: clamp(24px, 2.4vw, 34px);
+  line-height: 1.05;
+}
+
+h2 {
+  font-weight: 600;
+  font-size: 20px;
+}
+
+h3 {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  text-decoration-color: var(--accent);
+}
+
+code,
+.mono {
+  font-family: var(--font-m);
+  font-size: 0.92em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.wrap {
+  width: var(--wrap);
+  margin: 0 auto;
+}
+
+/* --- карточки и панели --- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: 18px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  overflow: hidden;
+}
+
+.panel > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* Пояснение под заголовком панели не должно тянуться на всю ширину экрана:
+   строка в полтораста символов не читается, её взгляд теряет на возврате. */
+.panel > header p {
+  max-width: 84ch;
+  margin: 4px 0 0;
+}
+
+.grid {
+  display: grid;
+  gap: var(--gap);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+}
+
+/* --- стат-плитка --- */
+
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: 14px 16px;
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+
+.tile .value {
+  font-family: var(--font-d);
+  font-weight: 600;
+  font-size: 26px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile .label {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tile .hint {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* --- таблицы --- */
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+td {
+  padding: 0 12px;
+  height: var(--row);
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+
+tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.num {
+  text-align: right;
+}
+
+/* --- элементы управления --- */
+
+button,
+.btn {
+  font: inherit;
+  font-size: 13.5px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  padding: 8px 16px;
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+button:hover,
+.btn:hover {
+  border-color: var(--accent);
+}
+
+button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: linear-gradient(180deg, var(--amber-hi), var(--amber));
+  color: #1d1302;
+  border-color: transparent;
+  font-weight: 500;
+}
+
+.btn-danger:hover {
+  border-color: var(--critical);
+  color: var(--critical);
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-field);
+  padding: 9px 12px;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* --- ярлыки состояния: цвет плюс текст, никогда только цвет --- */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pill-good {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 40%, transparent);
+}
+
+.pill-warn {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+.pill-bad {
+  color: var(--critical);
+  border-color: color-mix(in srgb, var(--critical) 40%, transparent);
+}
+
+.pill-mute {
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.empty {
+  padding: 28px 18px;
+  text-align: center;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

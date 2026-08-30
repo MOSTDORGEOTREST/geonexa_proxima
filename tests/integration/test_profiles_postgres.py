@@ -4,14 +4,18 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select
 
-from geonexa_proxima.config import Settings
+from geonexa_proxima.config import get_settings
 from geonexa_proxima.db import (
     SQLAlchemyItemRepository,
     SQLAlchemyUserProfileRepository,
     create_engine,
     create_session_factory,
 )
-from geonexa_proxima.db.models import ItemModel, UserModel, UserProfileModel
+from geonexa_proxima.db.models import (
+    ItemModel,
+    SubscriberModel,
+    SubscriberProfileModel,
+)
 from geonexa_proxima.domain import CollectedItem, FeedbackKind, ItemKind, SourceName
 from geonexa_proxima.services.profiles import UserProfileService
 
@@ -23,7 +27,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_profile_crud_active_constraint_scores_and_feedback() -> None:
-    settings = Settings(_env_file=None)
+    # Настройки берём из .env: тест ходит в ту же базу, что и приложение.
+    settings = get_settings()
     engine = create_engine(settings.database_url)
     sessions = create_session_factory(engine)
     profile_repository = SQLAlchemyUserProfileRepository(sessions)
@@ -77,17 +82,17 @@ async def test_profile_crud_active_constraint_scores_and_feedback() -> None:
         async with sessions() as session:
             active_count = await session.scalar(
                 select(func.count())
-                .select_from(UserProfileModel)
+                .select_from(SubscriberProfileModel)
                 .where(
-                    UserProfileModel.user_id == user.id,
-                    UserProfileModel.is_active.is_(True),
+                    SubscriberProfileModel.subscriber_id == user.id,
+                    SubscriberProfileModel.is_active.is_(True),
                 )
             )
         assert active_count == 1
     finally:
         async with sessions() as session:
             if user is not None:
-                await session.execute(delete(UserModel).where(UserModel.id == user.id))
+                await session.execute(delete(SubscriberModel).where(SubscriberModel.id == user.id))
             if stored is not None:
                 await session.execute(delete(ItemModel).where(ItemModel.id == stored.id))
             await session.commit()

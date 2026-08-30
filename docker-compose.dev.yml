@@ -1,0 +1,206 @@
+# Локальная разработка: своя база в контейнере, ничего внешнего не требуется.
+#
+# Отличия от production-стека:
+#   * PostgreSQL поднимается здесь же, с pgvector на борту;
+#   * схема создаётся автоматически при первом старте (DB_AUTO_MIGRATE);
+#   * рассылка по умолчанию в режиме репетиции (DELIVERY_DRY_RUN) — чтобы
+#     отладочный прогон не ушёл живым подписчикам;
+#   * пулы соединений крошечные: на одной машине их несколько штук.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml logs -f api
+
+name: geonexa-proxima-dev
+
+x-app-env: &app-env
+  ENVIRONMENT: development
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  TIMEZONE: ${TIMEZONE:-Europe/Moscow}
+  DATABASE_URL: postgresql+asyncpg://${DEV_POSTGRES_USER:-geonexa}:${DEV_POSTGRES_PASSWORD:-geonexa}@postgres:5432/${DEV_POSTGRES_DB:-geonexa}
+  DATABASE_SSL_MODE: disable
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-2}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-0}
+  DB_CONNECTION_BUDGET: ${DB_CONNECTION_BUDGET:-2}
+  DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-15}
+  DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+  DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-10}
+  DB_COMMAND_TIMEOUT: ${DB_COMMAND_TIMEOUT:-30}
+  DB_AUTO_MIGRATE: "true"
+  DB_AUTO_SEED: "true"
+  VECTOR_BACKEND: pgvector
+  VECTOR_COLUMN_TYPE: ${VECTOR_COLUMN_TYPE:-vector}
+  VECTOR_INDEX_KIND: ${VECTOR_INDEX_KIND:-hnsw}
+  MODELS_ROOT: /app/models
+  # Режим моделей должен соответствовать сборке: local требует INSTALL_ML=true,
+  # иначе в образе нет torch и первый же вызов эмбеддера падает.
+  #
+  # Переменные намеренно свои, с префиксом DEV_: в .env лежат значения для
+  # production (EMBEDDING_MODE=local), и compose подставил бы именно их —
+  # стенд молча оказался бы в режиме, для которого в образе нет весов.
+  EMBEDDING_MODE: ${DEV_EMBEDDING_MODE:-api}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+  RERANKER_MODE: ${DEV_RERANKER_MODE:-api}
+  # Размеры пачек и окно реранкера на ноутбуке приходится держать скромными.
+  # Production-значения (batch 16, окно 8192) рассчитаны на сервер: 0.6B
+  # causal-модель с контекстом 8192 и пачкой 16 держит в памяти несколько
+  # гигабайт одних активаций, и Docker Desktop убивает процесс посреди сбора.
+  EMBEDDING_BATCH_SIZE: ${DEV_EMBEDDING_BATCH_SIZE:-8}
+  RERANKER_BATCH_SIZE: ${DEV_RERANKER_BATCH_SIZE:-2}
+  RERANKER_MAX_LENGTH: ${DEV_RERANKER_MAX_LENGTH:-2048}
+  MAX_ITEMS_PER_SOURCE: ${DEV_MAX_ITEMS_PER_SOURCE:-50}
+  PREFECT_API_URL: http://prefect-server:4200/api
+  PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-geonexa-pool}
+  PUBLIC_BASE_URL: ${DEV_PUBLIC_BASE_URL:-http://localhost:8000}
+  LOG_JSON: ${LOG_JSON:-false}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:?Задай ADMIN_USERNAME в .env}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Задай ADMIN_PASSWORD в .env}
+  ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?Задай ADMIN_JWT_SECRET в .env}
+  SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:?Задай SECRET_ENCRYPTION_KEY в .env}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Задай TELEGRAM_BOT_TOKEN в .env}
+  TELEGRAM_OWNER_IDS: ${TELEGRAM_OWNER_IDS:-}
+  TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+  TELEGRAM_REGISTRATION_MODE: ${TELEGRAM_REGISTRATION_MODE:-allowlist}
+  TELEGRAM_ALLOW_GROUP_CHATS: ${TELEGRAM_ALLOW_GROUP_CHATS:-true}
+  TELEGRAM_AUTO_REGISTER_CHATS: ${TELEGRAM_AUTO_REGISTER_CHATS:-true}
+  DEFAULT_LLM_API_KEY: ${DEFAULT_LLM_API_KEY:?Задай DEFAULT_LLM_API_KEY в .env}
+  LIGHT_LLM_API_KEY: ${LIGHT_LLM_API_KEY:?Задай LIGHT_LLM_API_KEY в .env}
+  HEAVY_LLM_API_KEY: ${HEAVY_LLM_API_KEY:?Задай HEAVY_LLM_API_KEY в .env}
+  LIGHT_LLM_BASE_URL: ${LIGHT_LLM_BASE_URL:-https://api.deepseek.com/v1}
+  HEAVY_LLM_BASE_URL: ${HEAVY_LLM_BASE_URL:-https://api.deepseek.com/v1}
+  LIGHT_LLM_MODEL: ${LIGHT_LLM_MODEL:-deepseek-v4-flash}
+  HEAVY_LLM_MODEL: ${HEAVY_LLM_MODEL:-deepseek-v4-flash}
+  # Репетиция: задания проходят весь путь, но в Telegram ничего не уходит.
+  DELIVERY_DRY_RUN: ${DEV_DELIVERY_DRY_RUN:-true}
+
+x-app-build: &app-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      # Стенд по умолчанию работает на API-режиме моделей: torch весит больше,
+      # чем всё остальное вместе взятое, и первая сборка занимала бы минуты.
+      # Для локальных весов из models/: INSTALL_ML=true в .env и пересборка.
+      INSTALL_ML: ${INSTALL_ML:-false}
+  restart: unless-stopped
+  volumes:
+    # Модели монтируются, а не копируются в образ: 2.4 ГБ весов в слое —
+    # это медленная сборка и раздутый registry.
+    - ./models:/app/models:ro
+    - ./config:/app/config:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DEV_POSTGRES_USER:-geonexa}
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-geonexa}
+      POSTGRES_DB: ${DEV_POSTGRES_DB:-geonexa}
+    ports:
+      - "${DEV_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - dev_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  prefect-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: ${DEV_PREFECT_POSTGRES_PASSWORD:-prefect}
+      POSTGRES_DB: prefect
+    volumes:
+      - dev_prefect_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prefect -d prefect"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    restart: unless-stopped
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:${DEV_PREFECT_POSTGRES_PASSWORD:-prefect}@prefect-postgres:5432/prefect
+      PREFECT_API_URL: http://127.0.0.1:4200/api
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+    ports:
+      - "${DEV_PREFECT_PORT:-4200}:4200"
+    depends_on:
+      prefect-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=5)\""]
+      interval: 10s
+      timeout: 8s
+      retries: 10
+      start_period: 40s
+
+  api:
+    <<: *app-build
+    command: ["api"]
+    environment:
+      <<: *app-env
+      GEONEXA_SERVICE: api
+    ports:
+      - "${DEV_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 10s
+      timeout: 8s
+      retries: 10
+      start_period: 60s
+
+  bot:
+    <<: *app-build
+    command: ["bot"]
+    environment:
+      <<: *app-env
+      GEONEXA_SERVICE: bot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  prefect-worker:
+    <<: *app-build
+    command: ["worker"]
+    environment:
+      <<: *app-env
+      GEONEXA_SERVICE: worker
+      PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-geonexa-pool}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prefect-server:
+        condition: service_healthy
+
+  admin-ui:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ORIGIN: ${DEV_ADMIN_ORIGIN:-http://localhost:5173}
+      API_INTERNAL_URL: http://api:8000
+      PUBLIC_API_BASE_URL: ${DEV_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      PUBLIC_APP_NAME: ${PUBLIC_APP_NAME:-Проксима}
+    ports:
+      - "${DEV_ADMIN_UI_PORT:-5173}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  dev_postgres:
+  dev_prefect_postgres:
