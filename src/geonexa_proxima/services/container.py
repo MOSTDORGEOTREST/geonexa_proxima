@@ -47,17 +47,23 @@ class Container:
     settings: Settings
     repository: ItemRepository | None = None
     profile_repository: UserProfileRepository | None = None
+    subscriber_repository: object | None = None
+    engine: Any | None = None
+    session_factory: Any | None = None
     collectors: Sequence[Collector] = field(default_factory=tuple)
     embedder: Embedder | None = None
     reranker: Reranker | None = None
     vector_store: VectorStore | None = None
     profile_vector_store: ProfileVectorStore | None = None
+    matcher: object | None = None
+    decision_sink: object | None = None
     ranker: Ranker | None = None
     analyzer: Analyzer | None = None
     personalizer: ProfileExplainer | None = None
     deep_personalizer: ProfileExplainer | None = None
     profile_text: str = ""
     resources: Sequence[object] = field(default_factory=tuple, repr=False)
+    _bot: Any | None = field(default=None, repr=False, compare=False)
 
     def readiness(self) -> dict[str, bool]:
         return {
@@ -75,7 +81,52 @@ class Container:
     def ready(self) -> bool:
         return all(self.readiness().values())
 
-    def ingestion_service(self) -> IngestionService:
+    def require_engine(self) -> Any:
+        """Движок нужен флоу напрямую: очередь доставки и роллапы ходят в SQL."""
+
+        if self.engine is None:
+            raise RuntimeError("Движок БД не сконфигурирован: bootstrap должен вернуть engine")
+        return self.engine
+
+    def telegram_bot(self) -> Any:
+        """Один экземпляр Bot на контейнер.
+
+        Воркер рассылки шлёт сотни сообщений подряд: каждый новый Bot — это
+        новая HTTP-сессия к api.telegram.org, а лимиты считаются на токен, а не
+        на сессию. Держим один и закрываем его в ``close``.
+        """
+
+        if self._bot is None:
+            from aiogram import Bot
+            from aiogram.client.default import DefaultBotProperties
+            from aiogram.enums import ParseMode
+
+            self._bot = Bot(
+                token=self.settings.telegram_bot_token.get_secret_value(),
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            )
+        return self._bot
+
+    def subscribers(self) -> Any:
+        """Kind-aware репозиторий: подписчики, чаты, подписки."""
+
+        if self.subscriber_repository is None:
+            raise RuntimeError("Репозиторий подписчиков не сконфигурирован")
+        return self.subscriber_repository
+
+    def ingestion_service(
+        self, *, run_id: Any | None = None, logger: Any | None = None
+    ) -> IngestionService:
+        """Собрать пайплайн сбора.
+
+        ``run_id`` включает журнал решений: строки в `harvest_decisions`
+        обязаны ссылаться на прогон, поэтому вне прогона журнал не пишется.
+
+        ``logger`` — куда сервис рассказывает про источники. Флоу передаёт сюда
+        логгер прогона Prefect: иначе построчный отчёт по источникам уходит в
+        stdout контейнера, а в хвосте прогона его не видно.
+        """
+
         required = {
             "repository": self.repository,
             "collectors": self.collectors,
@@ -94,6 +145,18 @@ class Container:
             and self.ranker
             and self.analyzer
         )
+        sink = self.decision_sink
+        counter = None
+        if self.engine is not None:
+            from geonexa_proxima.services.decisions import PostgresDecisionSink, TermHitCounter
+
+            counter = TermHitCounter(self.engine)
+            if sink is None and run_id is not None:
+                sink = PostgresDecisionSink(
+                    self.engine,
+                    run_id,
+                    store_rejected=self.settings.harvest_store_rejected,
+                )
         return IngestionService(
             collectors=self.collectors,
             repository=self.repository,
@@ -103,14 +166,44 @@ class Container:
             analyzer=self.analyzer,
             reranker=self.reranker,
             profile_text=self.profile_text,
+            matcher=self.matcher or self.build_matcher(),
+            decision_sink=sink,
             semantic_threshold=self.settings.semantic_threshold,
             deep_analysis_threshold=self.settings.deep_analysis_threshold,
             embedding_batch_size=self.settings.embedding_batch_size,
+            keyword_threshold=self.settings.harvest_keyword_threshold,
+            store_rejected=self.settings.harvest_store_rejected,
+            cursors=self.source_cursors(),
+            term_counter=counter,
+            logger=logger,
         )
+
+    def source_cursors(self) -> Any | None:
+        """Курсоры источников. Без движка сбор идёт по фиксированному окну."""
+
+        if self.engine is None:
+            return None
+        from geonexa_proxima.services.cursors import SourceCursors
+
+        return SourceCursors(self.engine, profile_key=self.settings.harvest_profile_key)
+
+    def build_matcher(self) -> object | None:
+        """Собрать гейт из YAML-профиля.
+
+        Профиль может отсутствовать в тестовых окружениях — тогда пайплайн
+        работает без гейта, как раньше, а не падает на старте.
+        """
+
+        path = self.settings.harvest_config_path
+        if not path.is_file():
+            return None
+        from geonexa_proxima.harvest import HarvestMatcher, load_harvest_profile
+
+        return HarvestMatcher(load_harvest_profile(path))
 
     def digest_builder(self) -> DigestBuilder:
         if self.repository is None:
-            raise RuntimeError("Repository is not configured")
+            raise RuntimeError("Репозиторий материалов не сконфигурирован: нет подключения к базе")
         return DigestBuilder(
             self.repository,
             personalization=self.personalization_service(),
@@ -118,7 +211,10 @@ class Container:
 
     def search_service(self) -> SearchService:
         if self.repository is None or self.embedder is None or self.vector_store is None:
-            raise RuntimeError("Search requires repository, embedder, and vector store")
+            raise RuntimeError(
+                "Поиску нужны репозиторий, эмбеддер и векторное хранилище — "
+                "проверь EMBEDDING_MODE и VECTOR_BACKEND в /ready"
+            )
         return SearchService(
             repository=self.repository,
             embedder=self.embedder,
@@ -128,7 +224,7 @@ class Container:
 
     def profile_service(self) -> UserProfileService:
         if self.profile_repository is None:
-            raise RuntimeError("Profile repository is not configured")
+            raise RuntimeError("Репозиторий профилей не сконфигурирован")
         return UserProfileService(self.profile_repository, self.profile_text)
 
     def personalization_service(self) -> PersonalizationService:
@@ -141,7 +237,10 @@ class Container:
                 self.profile_vector_store,
             )
         ):
-            raise RuntimeError("Personalization dependencies are not configured")
+            raise RuntimeError(
+                "Персонализация не собрана: нужны репозитории, эмбеддер и оба "
+                "векторных хранилища. Что именно отсутствует, показывает /ready"
+            )
         assert self.repository
         assert self.profile_repository
         assert self.embedder
@@ -160,7 +259,7 @@ class Container:
 
     def feedback_service(self) -> ProfileFeedbackService:
         if self.repository is None or self.profile_repository is None:
-            raise RuntimeError("Feedback dependencies are not configured")
+            raise RuntimeError("Обработка обратной связи не сконфигурирована")
         return ProfileFeedbackService(
             item_repository=self.repository,
             profile_repository=self.profile_repository,
@@ -168,9 +267,17 @@ class Container:
         )
 
     async def close(self) -> None:
-        """Close only dependencies that expose a conventional close hook."""
+        """Закрыть зависимости с обычным хуком закрытия.
+
+        Движок сюда не входит намеренно: он один на процесс (см. ``get_engine``),
+        и восемь параллельных флоу подписчиков закрыли бы общий пул друг под
+        другом. Пул гасится один раз на остановке сервиса — ``dispose_engines``.
+        """
 
         seen: set[int] = set()
+        if self._bot is not None:
+            bot, self._bot = self._bot, None
+            await bot.session.close()
         values: list[object] = [
             *self.collectors,
             self.analyzer,
@@ -244,12 +351,7 @@ def load_container(
         if "repository" not in components:
             repository_parts = _build_conventional_repositories(settings)
             if repository_parts is not None:
-                (
-                    components["repository"],
-                    components["profile_repository"],
-                    engine,
-                ) = repository_parts
-                components.setdefault("resources", []).append(engine)
+                components.update(repository_parts)
         container = _coerce_container(components, settings)
     if require_ready and not container.ready:
         missing = [name for name, ready in container.readiness().items() if not ready]
@@ -275,6 +377,9 @@ def _coerce_container(value: object, settings: Settings) -> Container:
     allowed = {
         "repository",
         "profile_repository",
+        "subscriber_repository",
+        "engine",
+        "session_factory",
         "collectors",
         "embedder",
         "reranker",
@@ -332,7 +437,7 @@ def _invoke(factory: Callable[..., object], settings: Settings, **extras: object
 
 def _build_conventional_repositories(
     settings: Settings,
-) -> tuple[object, object, object] | None:
+) -> dict[str, Any] | None:
     """Compose the confirmed db package primitives when no repository factory exists."""
 
     try:
@@ -341,20 +446,28 @@ def _build_conventional_repositories(
         if exc.name == "geonexa_proxima.db":
             return None
         raise
-    create_engine = getattr(module, "create_engine", None)
     create_session_factory = getattr(module, "create_session_factory", None)
     repository_type = getattr(module, "SQLAlchemyItemRepository", None)
     profile_repository_type = getattr(module, "SQLAlchemyUserProfileRepository", None)
+    subscriber_repository_type = getattr(module, "SubscriberRepository", None)
     if not all(
         callable(value)
         for value in (
-            create_engine,
             create_session_factory,
             repository_type,
             profile_repository_type,
+            subscriber_repository_type,
         )
     ):
         return None
-    engine = create_engine(settings.database_url)
+    from geonexa_proxima.db.session import get_engine
+
+    engine = get_engine(settings, application_name=settings.db_application_name)
     session_factory = create_session_factory(engine)
-    return repository_type(session_factory), profile_repository_type(session_factory), engine
+    return {
+        "repository": repository_type(session_factory),
+        "profile_repository": profile_repository_type(session_factory),
+        "subscriber_repository": subscriber_repository_type(session_factory),
+        "engine": engine,
+        "session_factory": session_factory,
+    }

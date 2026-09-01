@@ -1,20 +1,24 @@
 [project]
 name = "geonexa-proxima"
 version = "0.1.0"
-description = "Персональный AI-радар научных работ и геотехнологий"
-authors = [{ name = "GeoNexa Proxima Team" }]
+description = "Проксима — радар научных публикаций ГЕОНЕКСЫ"
+authors = [{ name = "GeoNexa" }]
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
     "aiogram",
     "alembic",
+    "argon2-cffi",
     "asyncpg",
+    "croniter",
     "fastapi",
     "httpx",
     "prefect",
     "pydantic",
     "pydantic-settings",
+    "pyjwt",
     "python-dotenv",
+    "python-multipart",
     "pyyaml",
     "qdrant-client",
     "rapidfuzz",
@@ -61,6 +65,16 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+# Кодовая база двуязычная: русские докстринги и сообщения соседствуют с
+# английскими идентификаторами (PostgreSQL, DSN, Prefect), и RUF001-003
+# принимают кириллицу за подделку латиницы. Разрешаем буквы кириллицы явно —
+# правила продолжают ловить действительно подозрительные символы: греческие,
+# математические алфавиты, невидимые пробелы.
+allowed-confusables = [
+    "А", "В", "Е", "З", "К", "М", "Н", "О", "Р", "С", "Т", "У", "Х",
+    "а", "б", "в", "г", "д", "е", "з", "и", "к", "м", "н", "о", "п",
+    "р", "с", "т", "у", "х", "ч", "ь", "ъ", "ѕ", "і", "ј", "×",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["RUF001"]

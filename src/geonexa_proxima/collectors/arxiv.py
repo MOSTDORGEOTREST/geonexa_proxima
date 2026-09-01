@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from xml.etree import ElementTree
 
 from geonexa_proxima.collectors.base import (
     AsyncHTTPProvider,
     TaxonomyInput,
     combined_query,
-    is_since,
+    in_window,
     parse_date,
 )
 from geonexa_proxima.domain import Author, CollectedItem, SourceName
@@ -30,12 +30,17 @@ class ArxivCollector(AsyncHTTPProvider):
         super().__init__(**kwargs)
         self.query = combined_query(query, taxonomy) or "geotechnical OR geospatial"
 
-    async def collect(self, since: datetime, limit: int) -> list[CollectedItem]:
+    #: Потолок выдачи arXiv за один запрос.
+    page_limit = 2000
+
+    async def collect(
+        self, since: datetime, limit: int, until: datetime | None = None
+    ) -> list[CollectedItem]:
         response = await self._request(
             "GET",
             "https://export.arxiv.org/api/query",
             params={
-                "search_query": self._search_query(),
+                "search_query": self._search_query(since, until),
                 "start": 0,
                 "max_results": limit,
                 "sortBy": "submittedDate",
@@ -47,7 +52,7 @@ class ArxivCollector(AsyncHTTPProvider):
         items: list[CollectedItem] = []
         for entry in root.findall(f"{{{_ATOM}}}entry"):
             published = parse_date(entry.findtext(f"{{{_ATOM}}}published"))
-            if not is_since(published, since):
+            if not in_window(published, since, until):
                 continue
             entry_url = (entry.findtext(f"{{{_ATOM}}}id") or "").strip()
             arxiv_id = re.sub(r"v\d+$", "", entry_url.rstrip("/").rsplit("/", 1)[-1])
@@ -83,12 +88,31 @@ class ArxivCollector(AsyncHTTPProvider):
             )
         return items[:limit]
 
-    def _search_query(self) -> str:
+    def _search_query(self, since: datetime, until: datetime | None = None) -> str:
         if '"' in self.query:
-            return re.sub(r'"([^"]+)"', lambda match: f'all:"{match.group(1)}"', self.query)
-        parts = [part.strip() for part in self.query.split(" OR ") if part.strip()]
-        return " OR ".join(f'all:"{part}"' for part in parts)
+            terms = re.sub(r'"([^"]+)"', lambda match: f'all:"{match.group(1)}"', self.query)
+        else:
+            parts = [part.strip() for part in self.query.split(" OR ") if part.strip()]
+            terms = " OR ".join(f'all:"{part}"' for part in parts)
+        if until is None:
+            return terms
+        # Окно задаётся самому arXiv, а не отбирается на нашей стороне. Выдача
+        # идёт от свежего к старому пачкой в max_results: за вчерашние сутки
+        # фильтр по ответу сработал бы, а за позавчерашние вернул бы сегодняшние
+        # работы и отбросил их все до единой — сутки молча остались бы пустыми.
+        # Границы у arXiv включающие с обеих сторон, а наше окно — полуинтервал:
+        # верхнюю отодвигаем на минуту назад, иначе полночь попала бы и в эти
+        # сутки, и в следующие. Пробелы в значении кодирует httpx, «+» внутри
+        # строки уехал бы на сервер как %2B и сломал разбор запроса.
+        window = f"submittedDate:[{_stamp(since)} TO {_stamp(until - timedelta(minutes=1))}]"
+        return f"({terms}) AND {window}"
 
 
 def _clean(value: str | None) -> str:
     return " ".join((value or "").split())
+
+
+def _stamp(value: datetime) -> str:
+    """Метка времени в формате arXiv: YYYYMMDDHHMM, без разделителей и в UTC."""
+
+    return value.astimezone(UTC).strftime("%Y%m%d%H%M")

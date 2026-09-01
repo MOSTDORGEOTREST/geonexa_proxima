@@ -118,3 +118,22 @@ class AsyncHTTPProvider:
 
 def is_since(value: date | None, since: datetime) -> bool:
     return value is None or value >= since.date()
+
+
+def in_window(value: date | None, since: datetime, until: datetime | None) -> bool:
+    """Попадает ли дата публикации в окно ``[since, until)``.
+
+    Верхняя граница исключающая и сравнивается по дате: окно суток задаётся
+    как полночь-полночь, и материал, вышедший в день ``until``, принадлежит
+    уже следующему окну. Без этого соседние сутки перекрывались бы на день, а
+    один и тот же материал попадал в два прогона.
+
+    Дата неизвестна — материал пропускаем: у части источников её просто нет, и
+    отбрасывать их молча хуже, чем взять лишнее.
+    """
+
+    if value is None:
+        return True
+    if value < since.date():
+        return False
+    return until is None or value < until.date()

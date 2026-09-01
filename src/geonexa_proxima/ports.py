@@ -22,11 +22,22 @@ from geonexa_proxima.domain import (
     TelegramIdentity,
     User,
     UserProfile,
+    UserStatus,
 )
 
 
 class Collector(Protocol):
-    async def collect(self, since: datetime, limit: int) -> list[CollectedItem]: ...
+    """Источник материалов.
+
+    ``until`` — верхняя граница окна, исключающая: сбор идёт сутками, и без
+    неё запрос за 30 августа вернул бы всё с 30 августа по сегодня. Параметр
+    необязательный: без него источник работает как раньше, «от даты и до
+    свежего», и это нормальный режим для разового прогона.
+    """
+
+    async def collect(
+        self, since: datetime, limit: int, until: datetime | None = None
+    ) -> list[CollectedItem]: ...
 
 
 class Embedder(Protocol):
@@ -36,6 +47,16 @@ class Embedder(Protocol):
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]: ...
 
     async def embed_query(self, text: str) -> list[float]: ...
+
+    async def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        """Несколько запросов одной пачкой.
+
+        Грани профиля эмбеддятся вместе: на локальной модели одна пачка из
+        пяти коротких текстов заметно дешевле пяти отдельных прогонов, а
+        вызывается это на каждый профиль в каждом прогоне диспетчера.
+        Реализация по умолчанию честно падает обратно на `embed_query`.
+        """
+        ...
 
 
 class Reranker(Protocol):
@@ -56,15 +77,22 @@ class VectorStore(Protocol):
 
 
 class ProfileVectorStore(Protocol):
+    """Кэш векторов профиля. `facet` — номер грани, 0 — весь профиль.
+
+    Грани версионируются вместе с профилем: правка описания меняет `version`, и
+    старые векторы граней перестают находиться, не мешая новым.
+    """
+
     async def ensure_collection(self, dimensions: int) -> None: ...
 
-    async def get(self, profile_id: UUID, version: int) -> list[float] | None: ...
+    async def get(self, profile_id: UUID, version: int, facet: int = 0) -> list[float] | None: ...
 
     async def upsert(
         self,
         profile_id: UUID,
         version: int,
         vector: Sequence[float],
+        facet: int = 0,
     ) -> None: ...
 
     async def delete(self, profile_id: UUID) -> None: ...
@@ -98,17 +126,20 @@ class ItemRepository(Protocol):
 
     async def get(self, item_id: UUID) -> StoredItem | None: ...
 
-    async def save_feedback(
-        self,
-        external_user_id: int,
-        item_id: UUID,
-        kind: FeedbackKind,
-        context: dict[str, object] | None = None,
-    ) -> None: ...
+    async def get_many(self, item_ids: Sequence[UUID]) -> list[StoredItem]:
+        """Материалы по списку id одним запросом.
+
+        Реализация по умолчанию честно падает обратно на `get`: адаптеры
+        приходят и снаружи, и требовать метод от всех — значит уронить сервис
+        на том, у кого его нет.
+        """
+        ...
 
 
 class UserProfileRepository(Protocol):
-    async def get_or_register(self, identity: TelegramIdentity) -> tuple[User, bool]: ...
+    async def get_or_register(
+        self, identity: TelegramIdentity, *, initial_status: UserStatus | str = ...
+    ) -> tuple[User, bool]: ...
 
     async def get_by_telegram(self, telegram_id: int) -> User | None: ...
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from geonexa_proxima.collectors.base import AsyncHTTPProvider, as_dict, as_list
+from geonexa_proxima.ml.local_models import preferred_dtype
 
 _SYSTEM = (
     "<|im_start|>system\nJudge whether the Document meets the requirements based on the "
@@ -72,15 +73,18 @@ class LocalQwen3Reranker:
                 tokenizer = AutoTokenizer.from_pretrained(
                     self.selected_model, padding_side="left", **common
                 )
-                model = AutoModelForCausalLM.from_pretrained(
-                    self.selected_model, torch_dtype="auto", **common
-                )
                 target = self.device or (
                     "cuda"
                     if torch.cuda.is_available()
                     else "mps"
                     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
                     else "cpu"
+                )
+                # `torch_dtype="auto"` берёт тип из config.json модели, а он
+                # рассчитан на GPU. На процессоре это либо вдвое лишней памяти,
+                # либо неподдерживаемый float16 — выбираем сами, по железу.
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.selected_model, torch_dtype=preferred_dtype(target), **common
                 )
                 model = model.to(target).eval()
                 self._tokenizer, self._model, self._torch = tokenizer, model, torch

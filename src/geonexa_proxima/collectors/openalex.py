@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from geonexa_proxima.collectors.base import (
     AsyncHTTPProvider,
@@ -30,10 +30,21 @@ class OpenAlexCollector(AsyncHTTPProvider):
         self.query = combined_query(query, taxonomy) or "geotechnical geospatial"
         self.email = email
 
-    async def collect(self, since: datetime, limit: int) -> list[CollectedItem]:
+    #: Сколько записей OpenAlex отдаёт за один запрос. Постраничного обхода
+    #: нет, поэтому это же число — реальный потолок выдачи за окно.
+    page_limit = 200
+
+    async def collect(
+        self, since: datetime, limit: int, until: datetime | None = None
+    ) -> list[CollectedItem]:
+        window = f"from_publication_date:{since.date().isoformat()}"
+        if until is not None:
+            # Обе границы у OpenAlex включающие, а окно суток — полуинтервал:
+            # день `until` принадлежит следующему прогону.
+            window += f",to_publication_date:{(until.date() - timedelta(days=1)).isoformat()}"
         params: dict[str, object] = {
             "search": self.query,
-            "filter": f"from_publication_date:{since.date().isoformat()}",
+            "filter": window,
             "per-page": min(limit, 200),
             "sort": "publication_date:desc",
         }

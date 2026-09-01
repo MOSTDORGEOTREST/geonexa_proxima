@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geonexa_proxima.db.models import (
+    DIGEST_STATUS_VALUES,
     DigestItemModel,
     DigestModel,
     FeedbackModel,
@@ -21,15 +22,16 @@ from geonexa_proxima.db.models import (
     ProfileInterestModel,
     ProfileInterestSignalModel,
     ProfileItemScoreModel,
+    SubscriberModel,
+    SubscriberProfileModel,
     TopicModel,
-    UserModel,
-    UserProfileModel,
 )
 from geonexa_proxima.db.session import SessionFactory
 from geonexa_proxima.domain import (
     FeedbackKind,
     InterestPolarity,
     InterestSignalSource,
+    NotFoundError,
     ProfileInterest,
     ProfileInterestSignal,
     ProfileItemScore,
@@ -42,15 +44,15 @@ from geonexa_proxima.domain import (
 _WHITESPACE = re.compile(r"\s+")
 
 
-class UserNotFoundError(LookupError):
+class UserNotFoundError(NotFoundError):
     """The requested application user does not exist."""
 
 
-class ProfileNotFoundError(LookupError):
+class ProfileNotFoundError(NotFoundError):
     """The requested profile does not belong to the requested user."""
 
 
-class InterestNotFoundError(LookupError):
+class InterestNotFoundError(NotFoundError):
     """The requested explicit or learned interest does not exist."""
 
 
@@ -71,6 +73,31 @@ def _clean_optional(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", value).strip())
+    return cleaned or None
+
+
+#: Пробелы и табы внутри строки — но не сами переводы строк.
+_INLINE_SPACE = re.compile(r"[^\S\n]+")
+#: Три и больше пустых строк подряд.
+_BLANK_RUN = re.compile(r"\n{3,}")
+
+
+def clean_description(value: str | None) -> str | None:
+    """Нормализовать описание профиля, сохранив разбиение на строки.
+
+    Общий `_clean_optional` схлопывает любые пробельные символы в один пробел,
+    включая переводы строк. Для описания это тихая потеря смысла: строка —
+    граница темы, и профиль, набранный по теме на строку, после первой же
+    перекомпиляции (например, при добавлении явной темы) склеивался в одну
+    тему. Внешне описание оставалось прежним, а поиск переставал различать
+    области интересов.
+    """
+
+    if value is None:
+        return None
+    normalized = unicodedata.normalize("NFKC", value)
+    lines = [_INLINE_SPACE.sub(" ", line).strip() for line in normalized.split("\n")]
+    cleaned = _BLANK_RUN.sub("\n\n", "\n".join(lines)).strip()
     return cleaned or None
 
 
@@ -103,26 +130,41 @@ class SQLAlchemyUserProfileRepository:
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
 
-    async def get_or_register(self, identity: TelegramIdentity) -> tuple[User, bool]:
+    async def get_or_register(
+        self,
+        identity: TelegramIdentity,
+        *,
+        initial_status: UserStatus | str = UserStatus.PENDING,
+    ) -> tuple[User, bool]:
+        """Найти подписчика по chat_id или завести нового.
+
+        ``initial_status`` действует только на впервые заведённую строку:
+        статус существующего подписчика здесь не трогается никогда. Иначе
+        каждое сообщение подтверждённого человека сбрасывало бы его обратно
+        в очередь на подтверждение.
+        """
+
         values = {
-            "external_user_id": identity.telegram_id,
+            "telegram_chat_id": identity.telegram_id,
+            "telegram_user_id": identity.telegram_id,
             "telegram_username": _clean_optional(identity.username),
-            "display_name": _clean_optional(identity.display_name),
+            "title": _clean_optional(identity.display_name),
             "language_code": _clean_optional(identity.language_code),
+            "status": str(getattr(initial_status, "value", initial_status)),
         }
         async with self._session_factory() as session, session.begin():
             statement = (
-                insert(UserModel)
+                insert(SubscriberModel)
                 .values(**values)
-                .on_conflict_do_nothing(index_elements=[UserModel.external_user_id])
-                .returning(UserModel)
+                .on_conflict_do_nothing(index_elements=[SubscriberModel.telegram_chat_id])
+                .returning(SubscriberModel)
             )
             model = (await session.scalars(statement)).one_or_none()
             created = model is not None
             if model is None:
                 model = await session.scalar(
-                    select(UserModel)
-                    .where(UserModel.external_user_id == identity.telegram_id)
+                    select(SubscriberModel)
+                    .where(SubscriberModel.telegram_chat_id == identity.telegram_id)
                     .with_for_update()
                 )
                 if model is None:
@@ -130,8 +172,12 @@ class SQLAlchemyUserProfileRepository:
                         f"Telegram user {identity.telegram_id} disappeared during registration"
                     )
                 model.telegram_username = values["telegram_username"]
-                model.display_name = values["display_name"]
+                # Колонка называется title: у группы это её название, у
+                # человека — имя. Одно поле на все три вида подписчика.
+                if values["title"]:
+                    model.title = values["title"]
                 model.language_code = values["language_code"]
+                model.telegram_user_id = model.telegram_user_id or identity.telegram_id
                 now = datetime.now(UTC)
                 model.last_seen_at = now
                 model.updated_at = now
@@ -143,21 +189,21 @@ class SQLAlchemyUserProfileRepository:
             raise ValueError("telegram_id must be positive")
         async with self._session_factory() as session:
             model = await session.scalar(
-                select(UserModel).where(UserModel.external_user_id == telegram_id)
+                select(SubscriberModel).where(SubscriberModel.telegram_chat_id == telegram_id)
             )
             return self._to_user(model) if model else None
 
     async def get_user(self, user_id: UUID) -> User | None:
         async with self._session_factory() as session:
-            model = await session.get(UserModel, user_id)
+            model = await session.get(SubscriberModel, user_id)
             return self._to_user(model) if model else None
 
     async def get_active_profile(self, user_id: UUID) -> UserProfile | None:
         async with self._session_factory() as session:
             model = await session.scalar(
-                select(UserProfileModel).where(
-                    UserProfileModel.user_id == user_id,
-                    UserProfileModel.is_active.is_(True),
+                select(SubscriberProfileModel).where(
+                    SubscriberProfileModel.subscriber_id == user_id,
+                    SubscriberProfileModel.is_active.is_(True),
                 )
             )
             return self._to_profile(model) if model else None
@@ -166,12 +212,12 @@ class SQLAlchemyUserProfileRepository:
         async with self._session_factory() as session:
             models = (
                 await session.scalars(
-                    select(UserProfileModel)
-                    .where(UserProfileModel.user_id == user_id)
+                    select(SubscriberProfileModel)
+                    .where(SubscriberProfileModel.subscriber_id == user_id)
                     .order_by(
-                        UserProfileModel.is_active.desc(),
-                        UserProfileModel.created_at,
-                        UserProfileModel.id,
+                        SubscriberProfileModel.is_active.desc(),
+                        SubscriberProfileModel.created_at,
+                        SubscriberProfileModel.id,
                     )
                 )
             ).all()
@@ -197,17 +243,17 @@ class SQLAlchemyUserProfileRepository:
             await self._lock_user(session, user_id)
             profile_count = await session.scalar(
                 select(func.count())
-                .select_from(UserProfileModel)
-                .where(UserProfileModel.user_id == user_id)
+                .select_from(SubscriberProfileModel)
+                .where(SubscriberProfileModel.subscriber_id == user_id)
             )
             activate = is_active or profile_count == 0
             if activate:
                 await self._deactivate_profiles(session, user_id)
-            model = UserProfileModel(
-                user_id=user_id,
+            model = SubscriberProfileModel(
+                subscriber_id=user_id,
                 name=cleaned_name,
                 normalized_name=normalized_name,
-                description=_clean_optional(description),
+                description=clean_description(description),
                 compiled_text=compiled_text.strip(),
                 version=1,
                 is_active=activate,
@@ -247,7 +293,7 @@ class SQLAlchemyUserProfileRepository:
                     model.normalized_name = normalized_name
                     changed = True
             if description is not None:
-                cleaned_description = _clean_optional(description)
+                cleaned_description = clean_description(description)
                 if model.description != cleaned_description:
                     model.description = cleaned_description
                     changed = True
@@ -275,9 +321,9 @@ class SQLAlchemyUserProfileRepository:
             await self._lock_user(session, user_id)
             profiles = (
                 await session.scalars(
-                    select(UserProfileModel)
-                    .where(UserProfileModel.user_id == user_id)
-                    .order_by(UserProfileModel.created_at, UserProfileModel.id)
+                    select(SubscriberProfileModel)
+                    .where(SubscriberProfileModel.subscriber_id == user_id)
+                    .order_by(SubscriberProfileModel.created_at, SubscriberProfileModel.id)
                     .with_for_update()
                 )
             ).all()
@@ -310,8 +356,8 @@ class SQLAlchemyUserProfileRepository:
             )
             await self._deactivate_profiles(session, user_id)
             await session.execute(
-                update(UserProfileModel)
-                .where(UserProfileModel.id == profile_id)
+                update(SubscriberProfileModel)
+                .where(SubscriberProfileModel.id == profile_id)
                 .values(is_active=True, updated_at=datetime.now(UTC))
                 .execution_options(synchronize_session=False)
             )
@@ -489,6 +535,7 @@ class SQLAlchemyUserProfileRepository:
         interest_score: float,
         personal_score: float,
         explanation: str | None = None,
+        matched_facet: str | None = None,
     ) -> ProfileItemScore:
         scores = {
             "semantic_score": _validate_score(semantic_score, "semantic_score"),
@@ -511,6 +558,7 @@ class SQLAlchemyUserProfileRepository:
                 item_id=item_id,
                 profile_version=profile_version,
                 explanation=_clean_optional(explanation),
+                matched_facet=_clean_optional(matched_facet),
                 **scores,
             )
             statement = statement.on_conflict_do_update(
@@ -518,6 +566,7 @@ class SQLAlchemyUserProfileRepository:
                 set_={
                     **scores,
                     "explanation": statement.excluded.explanation,
+                    "matched_facet": statement.excluded.matched_facet,
                     "updated_at": func.now(),
                 },
             ).returning(ProfileItemScoreModel)
@@ -563,12 +612,12 @@ class SQLAlchemyUserProfileRepository:
             model = await session.scalar(
                 select(ProfileItemScoreModel)
                 .join(
-                    UserProfileModel,
-                    UserProfileModel.id == ProfileItemScoreModel.profile_id,
+                    SubscriberProfileModel,
+                    SubscriberProfileModel.id == ProfileItemScoreModel.profile_id,
                 )
                 .where(
                     ProfileItemScoreModel.id == score_id,
-                    UserProfileModel.user_id == user_id,
+                    SubscriberProfileModel.subscriber_id == user_id,
                 )
             )
             return self._to_item_score(model) if model else None
@@ -577,13 +626,15 @@ class SQLAlchemyUserProfileRepository:
         async with self._session_factory() as session:
             models = (
                 await session.scalars(
-                    select(UserProfileModel)
-                    .join(UserModel, UserModel.id == UserProfileModel.user_id)
-                    .where(
-                        UserProfileModel.digest_enabled.is_(True),
-                        UserModel.status == UserStatus.ACTIVE.value,
+                    select(SubscriberProfileModel)
+                    .join(
+                        SubscriberModel, SubscriberModel.id == SubscriberProfileModel.subscriber_id
                     )
-                    .order_by(UserProfileModel.user_id, UserProfileModel.id)
+                    .where(
+                        SubscriberProfileModel.digest_enabled.is_(True),
+                        SubscriberModel.status == UserStatus.ACTIVE.value,
+                    )
+                    .order_by(SubscriberProfileModel.subscriber_id, SubscriberProfileModel.id)
                 )
             ).all()
             return [self._to_profile(model) for model in models]
@@ -603,7 +654,7 @@ class SQLAlchemyUserProfileRepository:
         async with self._session_factory() as session, session.begin():
             await self._owned_profile(session, user_id, profile_id)
             digest = DigestModel(
-                user_id=user_id,
+                subscriber_id=user_id,
                 profile_id=profile_id,
                 period_start=period_start,
                 period_end=period_end,
@@ -628,9 +679,19 @@ class SQLAlchemyUserProfileRepository:
             return digest.id
 
     async def mark_digest_status(self, digest_id: UUID, status: str) -> None:
-        allowed = {"pending", "building", "ready", "sent", "failed"}
-        if status not in allowed:
-            raise ValueError(f"unsupported digest status: {status}")
+        # Набор берётся из того же места, что и CHECK-ограничение таблицы.
+        # Раньше он был переписан здесь руками и отстал: схема разрешала
+        # `queued`, `partial` и `skipped`, а этот список — нет, и каждый
+        # успешно поставленный в очередь дайджест падал с ValueError уже
+        # ПОСЛЕ постановки задания. Срок следующего выпуска при этом не
+        # сдвигался, профиль оставался «пора», и следующий прогон диспетчера
+        # ставил ещё одно задание с новым digest_id — то есть в чат уходил
+        # второй экземпляр того же дайджеста.
+        if status not in DIGEST_STATUS_VALUES:
+            raise ValueError(
+                f"unsupported digest status: {status}; "
+                f"допустимы: {', '.join(sorted(DIGEST_STATUS_VALUES))}"
+            )
         values: dict[str, object] = {"status": status}
         if status == "sent":
             values["sent_at"] = func.now()
@@ -656,9 +717,9 @@ class SQLAlchemyUserProfileRepository:
                 raise LookupError(f"item {item_id} not found")
             if profile_id is None:
                 profile = await session.scalar(
-                    select(UserProfileModel).where(
-                        UserProfileModel.user_id == user_id,
-                        UserProfileModel.is_active.is_(True),
+                    select(SubscriberProfileModel).where(
+                        SubscriberProfileModel.subscriber_id == user_id,
+                        SubscriberProfileModel.is_active.is_(True),
                     )
                 )
                 if profile is None:
@@ -666,7 +727,7 @@ class SQLAlchemyUserProfileRepository:
             else:
                 profile = await self._owned_profile(session, user_id, profile_id)
             model = FeedbackModel(
-                user_id=user_id,
+                subscriber_id=user_id,
                 profile_id=profile.id,
                 item_id=item_id,
                 kind=kind.value,
@@ -677,8 +738,8 @@ class SQLAlchemyUserProfileRepository:
             return model.id
 
     @staticmethod
-    async def _lock_user(session: AsyncSession, user_id: UUID) -> UserModel:
-        model = await session.get(UserModel, user_id, with_for_update=True)
+    async def _lock_user(session: AsyncSession, user_id: UUID) -> SubscriberModel:
+        model = await session.get(SubscriberModel, user_id, with_for_update=True)
         if model is None:
             raise UserNotFoundError(f"user {user_id} not found")
         return model
@@ -690,10 +751,10 @@ class SQLAlchemyUserProfileRepository:
         profile_id: UUID,
         *,
         for_update: bool = False,
-    ) -> UserProfileModel:
-        statement = select(UserProfileModel).where(
-            UserProfileModel.id == profile_id,
-            UserProfileModel.user_id == user_id,
+    ) -> SubscriberProfileModel:
+        statement = select(SubscriberProfileModel).where(
+            SubscriberProfileModel.id == profile_id,
+            SubscriberProfileModel.subscriber_id == user_id,
         )
         if for_update:
             statement = statement.with_for_update()
@@ -705,10 +766,10 @@ class SQLAlchemyUserProfileRepository:
     @staticmethod
     async def _deactivate_profiles(session: AsyncSession, user_id: UUID) -> None:
         await session.execute(
-            update(UserProfileModel)
+            update(SubscriberProfileModel)
             .where(
-                UserProfileModel.user_id == user_id,
-                UserProfileModel.is_active.is_(True),
+                SubscriberProfileModel.subscriber_id == user_id,
+                SubscriberProfileModel.is_active.is_(True),
             )
             .values(is_active=False, updated_at=func.now())
             .execution_options(synchronize_session=False)
@@ -753,11 +814,11 @@ class SQLAlchemyUserProfileRepository:
         return await session.scalar(select(TopicModel.name).where(TopicModel.id == topic_id))
 
     @staticmethod
-    def _to_user(model: UserModel) -> User:
+    def _to_user(model: SubscriberModel) -> User:
         return User.model_validate(model)
 
     @staticmethod
-    def _to_profile(model: UserProfileModel) -> UserProfile:
+    def _to_profile(model: SubscriberProfileModel) -> UserProfile:
         return UserProfile.model_validate(model)
 
     @staticmethod

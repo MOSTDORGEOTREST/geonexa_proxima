@@ -14,6 +14,7 @@ from geonexa_proxima.domain import (
     TelegramIdentity,
     User,
     UserProfile,
+    UserStatus,
 )
 from geonexa_proxima.ports import UserProfileRepository
 
@@ -122,6 +123,7 @@ class UserProfileService:
         username: str | None = None,
         display_name: str | None = None,
         language_code: str | None = None,
+        initial_status: UserStatus | str = UserStatus.PENDING,
     ) -> tuple[User, UserProfile]:
         return await self.get_or_register(
             TelegramIdentity(
@@ -129,25 +131,46 @@ class UserProfileService:
                 username=username,
                 display_name=display_name,
                 language_code=language_code,
-            )
+            ),
+            initial_status=initial_status,
         )
 
-    async def get_or_register(self, identity: TelegramIdentity) -> tuple[User, UserProfile]:
-        user, _ = await self._repository.get_or_register(identity)
-        profile = await self._repository.get_active_profile(user.id)
-        if profile is None:
-            compiled_text = self._compiler.compile_profile(
-                description=None,
-                interests=(),
-                learned_signals=(),
-            )
-            profile = await self._repository.create_profile(
-                user.id,
-                self._default_profile_name,
-                compiled_text=compiled_text,
-                is_active=True,
-            )
-        return user, profile
+    async def get_or_register(
+        self,
+        identity: TelegramIdentity,
+        *,
+        initial_status: UserStatus | str = UserStatus.PENDING,
+    ) -> tuple[User, UserProfile]:
+        """Подписчик и его активный профиль; новый заводится неактивным.
+
+        Профиль создаётся сразу, даже пока подписчик ждёт подтверждения:
+        администратору нужно куда-то записать интересы до того, как он нажмёт
+        «Подтвердить», а не после.
+        """
+
+        user, _ = await self._repository.get_or_register(identity, initial_status=initial_status)
+        return user, await self.ensure_profile(user.id)
+
+    async def ensure_profile(self, user_id: UUID) -> UserProfile:
+        """Активный профиль подписчика, создав его при необходимости.
+
+        Нужен там, где подписчик появился не через `/start`: группа и канал
+        заводятся апдейтом `my_chat_member`, и профиля у них нет. А редактировать
+        администратору нужно что-то уже существующее — пустая карточка без
+        профиля выглядит как поломка, а не как «ещё не заполнено».
+        """
+
+        profile = await self._repository.get_active_profile(user_id)
+        if profile is not None:
+            return profile
+        return await self._repository.create_profile(
+            user_id,
+            self._default_profile_name,
+            compiled_text=self._compiler.compile_profile(
+                description=None, interests=(), learned_signals=()
+            ),
+            is_active=True,
+        )
 
     async def list_profiles(self, user_id: UUID) -> list[UserProfile]:
         return await self._repository.list_profiles(user_id)

@@ -93,7 +93,7 @@ async def test_personalization_fuses_all_scores_and_persists_snapshot() -> None:
     profile_repository = FakeProfileRepository()
     profile_vectors = FakeProfileVectors()
     service = PersonalizationService(
-        settings=Settings(_env_file=None),
+        settings=Settings(_env_file=None, admin_password="test-password"),
         item_repository=FakeItemRepository(item),  # type: ignore[arg-type]
         profile_repository=profile_repository,
         embedder=FakeEmbedder(),  # type: ignore[arg-type]

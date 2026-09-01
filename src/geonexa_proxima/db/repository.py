@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from geonexa_proxima.db.models import (
     AuthorModel,
     DatasetModel,
-    FeedbackModel,
     ItemAuthorModel,
     ItemDatasetModel,
     ItemModel,
@@ -26,14 +25,13 @@ from geonexa_proxima.db.models import (
     ItemTopicModel,
     RepositoryModel,
     TopicModel,
-    UserModel,
 )
 from geonexa_proxima.db.session import SessionFactory
 from geonexa_proxima.domain import (
     Author,
     CollectedItem,
     DeepAnalysis,
-    FeedbackKind,
+    NotFoundError,
     RankResult,
     StoredItem,
 )
@@ -42,7 +40,7 @@ _WHITESPACE = re.compile(r"\s+")
 _ARXIV_VERSION = re.compile(r"v\d+$", re.IGNORECASE)
 
 
-class ItemNotFoundError(LookupError):
+class ItemNotFoundError(NotFoundError):
     """Запрошенный канонический объект отсутствует."""
 
 
@@ -206,35 +204,24 @@ class SQLAlchemyItemRepository:
             model = await session.get(ItemModel, item_id)
             return self._to_domain(model) if model else None
 
-    async def save_feedback(
-        self,
-        external_user_id: int,
-        item_id: UUID,
-        kind: FeedbackKind,
-        context: dict[str, object] | None = None,
-    ) -> None:
-        """Persist Telegram feedback, creating the local user on first action."""
+    async def get_many(self, item_ids: Sequence[UUID]) -> list[StoredItem]:
+        """Материалы по списку идентификаторов — одним запросом.
 
-        async with self._session_factory() as session, session.begin():
-            if await session.get(ItemModel, item_id) is None:
-                raise ItemNotFoundError(f"item {item_id} not found")
-            user_statement = insert(UserModel).values(external_user_id=external_user_id)
-            user_id = (
-                await session.execute(
-                    user_statement.on_conflict_do_update(
-                        index_elements=[UserModel.external_user_id],
-                        set_={"external_user_id": user_statement.excluded.external_user_id},
-                    ).returning(UserModel.id)
-                )
-            ).scalar_one()
-            session.add(
-                FeedbackModel(
-                    user_id=user_id,
-                    item_id=item_id,
-                    kind=kind.value,
-                    context=_json_payload(context or {}),
-                )
-            )
+        Персонализация добирает сюда всё, что нашлось векторным поиском мимо
+        общей выборки, и таких материалов бывают десятки. Через `get` это
+        означало бы десятки обращений к пулу из двух соединений: конкурентно —
+        мгновенный `pool_timeout`, последовательно — десятки round-trip на
+        каждый профиль в каждом прогоне диспетчера.
+
+        Порядок результата не гарантируется: вызывающий раскладывает их по id.
+        """
+
+        unique = list(dict.fromkeys(item_ids))
+        if not unique:
+            return []
+        async with self._session_factory() as session:
+            rows = (await session.scalars(select(ItemModel).where(ItemModel.id.in_(unique)))).all()
+            return [self._to_domain(row) for row in rows]
 
     async def _update_existing(self, item_id: UUID, **values: Any) -> None:
         values["updated_at"] = func.now()

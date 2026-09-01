@@ -4,9 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from geonexa_proxima.config import Settings
+
+
+def point_id(profile_id: UUID, facet: int) -> str:
+    """Идентификатор точки: у Qdrant он UUID или число, а ключ у нас составной.
+
+    Детерминированный uuid5: тот же профиль и та же грань всегда дают ту же
+    точку, поэтому повторный upsert обновляет её, а не плодит дубли.
+    """
+
+    return str(uuid5(NAMESPACE_URL, f"geonexa:profile:{profile_id}:{int(facet)}"))
 
 
 class QdrantProfileVectorStore:
@@ -58,10 +68,16 @@ class QdrantProfileVectorStore:
             vectors_config=VectorParams(size=dimensions, distance=Distance.COSINE),
         )
 
-    async def get(self, profile_id: UUID, version: int) -> list[float] | None:
+    async def get(
+        self,
+        profile_id: UUID,
+        version: int,
+        facet: int = 0,
+        text_hash: str = "",
+    ) -> list[float] | None:
         records = await self._client().retrieve(
             collection_name=self.collection,
-            ids=[str(profile_id)],
+            ids=[point_id(profile_id, facet)],
             with_payload=True,
             with_vectors=True,
         )
@@ -71,32 +87,58 @@ class QdrantProfileVectorStore:
         payload = dict(getattr(record, "payload", None) or {})
         if payload.get("version") != version:
             return None
+        # Отпечаток текста — вторая половина ключа: номер грани позиционный, и
+        # после правки настроек разбиения под ним стоит уже другой текст.
+        if payload.get("text_hash", "") != text_hash:
+            return None
         vector = getattr(record, "vector", None)
         if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)):
             return None
         return [float(value) for value in vector]
 
-    async def upsert(self, profile_id: UUID, version: int, vector: Sequence[float]) -> None:
+    async def upsert(
+        self,
+        profile_id: UUID,
+        version: int,
+        vector: Sequence[float],
+        facet: int = 0,
+        text_hash: str = "",
+    ) -> None:
         from qdrant_client.models import PointStruct
 
         await self._client().upsert(
             collection_name=self.collection,
             points=[
                 PointStruct(
-                    id=str(profile_id),
+                    id=point_id(profile_id, facet),
                     vector=[float(value) for value in vector],
-                    payload={"profile_id": str(profile_id), "version": version},
+                    payload={
+                        "profile_id": str(profile_id),
+                        "version": version,
+                        "facet": int(facet),
+                        "text_hash": text_hash,
+                    },
                 )
             ],
             wait=True,
         )
 
-    async def delete(self, profile_id: UUID) -> None:
+    async def delete(self, profile_id: UUID, *, facets: int = 64) -> None:
+        """Убрать профиль вместе со всеми его гранями.
+
+        Точки адресуются по вычислимому id, а не фильтром по payload: фильтр
+        требует индекса по полю, а его в этой коллекции нет. `facets` — потолок
+        перебора; он заведомо выше `PROFILE_FACET_LIMIT`, и лишние id Qdrant
+        молча игнорирует.
+        """
+
         from qdrant_client.models import PointIdsList
 
         await self._client().delete(
             collection_name=self.collection,
-            points_selector=PointIdsList(points=[str(profile_id)]),
+            points_selector=PointIdsList(
+                points=[point_id(profile_id, facet) for facet in range(facets)]
+            ),
             wait=True,
         )
 

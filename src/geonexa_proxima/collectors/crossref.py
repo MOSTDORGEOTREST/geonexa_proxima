@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from geonexa_proxima.collectors.base import (
     AsyncHTTPProvider,
@@ -33,10 +33,19 @@ class CrossrefCollector(AsyncHTTPProvider):
         self.query = combined_query(query, taxonomy) or "geotechnical geospatial"
         self.email = email
 
-    async def collect(self, since: datetime, limit: int) -> list[CollectedItem]:
+    #: Потолок выдачи за один запрос: постраничного обхода нет.
+    page_limit = 1000
+
+    async def collect(
+        self, since: datetime, limit: int, until: datetime | None = None
+    ) -> list[CollectedItem]:
+        window = f"from-pub-date:{since.date().isoformat()}"
+        if until is not None:
+            # `until-pub-date` включает названный день, поэтому берём предыдущий.
+            window += f",until-pub-date:{(until.date() - timedelta(days=1)).isoformat()}"
         params: dict[str, object] = {
             "query.bibliographic": self.query,
-            "filter": f"from-pub-date:{since.date().isoformat()}",
+            "filter": window,
             "rows": min(limit, 1000),
             "sort": "published",
             "order": "desc",
