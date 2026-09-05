@@ -327,7 +327,11 @@ class Settings(BaseSettings):
 
     # --- пороги пайплайна ---------------------------------------------------
     semantic_threshold: float = Field(default=0.25, ge=-1, le=1)
-    digest_score_threshold: float = Field(default=6.5, ge=0, le=10)
+    #: Общий порог оценки для попадания в дайджест. 5.0, а не 6.5: по рубрике
+    #: ранкера добротная, но не новаторская профильная статья получает около
+    #: шести, и порог 6.5 отсекал бы ровно то, за чем подписчики приходят.
+    #: Отбор по интересам делает персональная оценка, а не этот порог.
+    digest_score_threshold: float = Field(default=5.0, ge=0, le=10)
     deep_analysis_threshold: float = Field(default=8.0, ge=0, le=10)
     alert_score_threshold: float = Field(default=9.0, ge=0, le=10)
     personalization_candidate_limit: int = Field(default=100, ge=10, le=1000)

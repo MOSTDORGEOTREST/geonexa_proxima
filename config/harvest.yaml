@@ -48,16 +48,20 @@ profile:
   # Хочешь пару обязательных -> заполни группу must_have (mode: all_of) и
   #                             добавь её в выражение через and.
   # ---------------------------------------------------------------------------
-  # Максимальный охват. Достаточно одного якоря из любой прикладной группы:
-  # геотехника и инженерная геология, строительство, мониторинг и геофизика.
-  # Общие «геологические» слова (geo_broad) тоже пропускают материал — но
-  # только если в нём нет признаков чистой геологии (pure_geology): палеонтология,
-  # стратиграфия, петрология, рудная геология и т.п. без инженерного якоря
-  # платформе не нужны. При инженерном якоре pure_geology не мешает: статья о
-  # минералогии глин для расчёта набухания проходит.
-  # Прежнее строгое правило: "geo_domain and (ai_method or geo_sensing) and not hard_exclude"
+  # Правило простое: в базу течёт всё, где есть хоть одно слово из области
+  # «гео» — геология, геофизика, гидрогеология, геотехника, грунты, породы,
+  # фундаменты, строительство. Отсев по существу делает дальше пайплайн:
+  # эмбеддинг, оценка LLM, персональное ранжирование. Здесь режем только
+  # откровенно чужое (hard_exclude: агрономия, медицина, финансы, редакционные
+  # заметки).
+  #
+  # geo_broad — главный широкий якорь (простые основы слов, EN + RU);
+  # geo_domain, construction, geo_sensing — подробные группы, они тоже
+  # пропускают и дают вес. pure_geology выключена: если чистая геология начнёт
+  # мешать, включите её (enabled: true) и верните в правило
+  # «(geo_broad and not pure_geology)».
   satisfy: >-
-    (geo_domain or construction or geo_sensing or (geo_broad and not pure_geology))
+    (geo_broad or geo_domain or construction or geo_sensing)
     and not hard_exclude
 
   # Порог keyword_score для стадии 1. Элементы ниже порога, но прошедшие
@@ -611,102 +615,290 @@ groups:
 
   # ---------------------------------------------------------------------------
   - id: geo_broad
-    name: "Общие слова наук о Земле и грунтах (только вместе с «не чистая геология»)"
+    name: "Гео — широкий якорь: геология, геофизика, грунты, породы, фундаменты"
     mode: any_of
     min_matches: 1
     fields: [title, abstract, keywords]
     weight: 0.10
     comment: >-
-      Широкий якорь для охвата: грунты, породы, геология, гидрогеология,
-      геокриология, геофизика вообще. Сам по себе пропускает материал только при
-      отсутствии признаков чистой геологии — см. satisfy.
+      Максимально простые основы слов (prefix), каждая — по-английски и
+      по-русски. Одного попадания достаточно, чтобы материал попал в базу.
     terms:
+      # --- науки о Земле --------------------------------------------------------
+      - {term: "geolog",                       match: prefix, weight: 0.8}
+      - {term: "геолог",                       match: prefix, lang: ru, weight: 0.8}
+      - {term: "geophysic",                    match: prefix, weight: 0.8}
+      - {term: "геофиз",                       match: prefix, lang: ru, weight: 0.8}
+      - {term: "geotechn",                     match: prefix, weight: 1.0}
+      - {term: "геотехн",                      match: prefix, lang: ru, weight: 1.0}
+      - {term: "geomechan",                    match: prefix, weight: 1.0}
+      - {term: "геомехан",                     match: prefix, lang: ru, weight: 1.0}
+      - {term: "geoscien",                     match: prefix, weight: 0.6}
+      - {term: "науки о земле",                match: phrase, lang: ru, weight: 0.6}
+      - {term: "hydrogeolog",                  match: prefix, weight: 0.9}
+      - {term: "гидрогеолог",                  match: prefix, lang: ru, weight: 0.9}
+      - {term: "geocryolog",                   match: prefix, weight: 1.0}
+      - {term: "геокриолог",                   match: prefix, lang: ru, weight: 1.0}
+      - {term: "geomorpholog",                 match: prefix, weight: 0.6}
+      - {term: "геоморфолог",                  match: prefix, lang: ru, weight: 0.6}
+      - {term: "geodes",                       match: prefix, weight: 0.5}
+      - {term: "геодез",                       match: prefix, lang: ru, weight: 0.5}
+      - {term: "geospatial",                   match: prefix, weight: 0.5}
+      - {term: "геопространств",               match: prefix, lang: ru, weight: 0.5}
+      - {term: "geomaterial",                  match: prefix, weight: 1.0}
+      - {term: "геоматериал",                  match: prefix, lang: ru, weight: 1.0}
+      - {term: "geosynthetic",                 match: prefix, weight: 0.9}
+      - {term: "геосинтетик",                  match: prefix, lang: ru, weight: 0.9}
+      - {term: "geothermal",                   match: prefix, weight: 0.5}
+      - {term: "геотермальн",                  match: prefix, lang: ru, weight: 0.5}
+      - {term: "geohazard",                    match: prefix, weight: 1.0}
+      - {term: "геориск",                      match: prefix, lang: ru, weight: 1.0}
+      - {term: "seismic",                      match: prefix, weight: 0.5}
+      - {term: "seismolog",                    match: prefix, weight: 0.5}
+      - {term: "сейсм",                        match: prefix, lang: ru, weight: 0.5}
+      - {term: "earthquake",                   match: prefix, weight: 0.6}
+      - {term: "землетрясен",                  match: prefix, lang: ru, weight: 0.6}
+      # --- геология вообще: минералы, породы, структуры, месторождения -----------
+      - {term: "mineral",                      match: prefix, weight: 0.5}
+      - {term: "минерал",                      match: prefix, lang: ru, weight: 0.5}
+      - {term: "ore deposit",                  match: phrase, weight: 0.6}
+      - {term: "рудн",                         match: prefix, lang: ru, weight: 0.5}
+      - {term: "месторожден",                  match: prefix, lang: ru, weight: 0.6}
+      - {term: "granit",                       match: prefix, weight: 0.6}
+      - {term: "гранит",                       match: prefix, lang: ru, weight: 0.6}
+      - {term: "basalt",                       match: prefix, weight: 0.6}
+      - {term: "базальт",                      match: prefix, lang: ru, weight: 0.6}
+      - {term: "limestone",                    match: prefix, weight: 0.7}
+      - {term: "известняк",                    match: prefix, lang: ru, weight: 0.7}
+      - {term: "sandstone",                    match: prefix, weight: 0.7}
+      - {term: "песчаник",                     match: prefix, lang: ru, weight: 0.7}
+      - {term: "shale",                        match: prefix, weight: 0.6}
+      - {term: "сланц",                        match: prefix, lang: ru, weight: 0.6}
+      - {term: "stratigraph",                  match: prefix, weight: 0.6}
+      - {term: "стратиграф",                   match: prefix, lang: ru, weight: 0.6}
+      - {term: "litholog",                     match: prefix, weight: 0.7}
+      - {term: "литолог",                      match: prefix, lang: ru, weight: 0.7}
+      - {term: "tectonic",                     match: prefix, weight: 0.5}
+      - {term: "тектон",                       match: prefix, lang: ru, weight: 0.5}
+      - {term: "fault zone",                   match: phrase, weight: 0.7}
+      - {term: "разлом",                       match: prefix, lang: ru, weight: 0.6}
+      - {term: "volcan",                       match: prefix, weight: 0.5}
+      - {term: "вулкан",                       match: prefix, lang: ru, weight: 0.5}
+      - {term: "petrolog",                     match: prefix, weight: 0.5}
+      - {term: "петролог",                     match: prefix, lang: ru, weight: 0.5}
+      - {term: "petrophysic",                  match: prefix, weight: 0.8}
+      - {term: "петрофиз",                     match: prefix, lang: ru, weight: 0.8}
+      - {term: "geochem",                      match: prefix, weight: 0.5}
+      - {term: "геохим",                       match: prefix, lang: ru, weight: 0.5}
+      - {term: "geochronolog",                 match: prefix, weight: 0.5}
+      - {term: "геохронолог",                  match: prefix, lang: ru, weight: 0.5}
+      - {term: "paleo",                        match: prefix, weight: 0.4}
+      - {term: "palaeo",                       match: prefix, weight: 0.4}
+      - {term: "палео",                        match: prefix, lang: ru, weight: 0.4}
+      - {term: "quaternary",                   match: prefix, weight: 0.6}
+      - {term: "четвертичн",                   match: prefix, lang: ru, weight: 0.6}
+      - {term: "glacial",                      match: prefix, weight: 0.5}
+      - {term: "ледник",                       match: prefix, lang: ru, weight: 0.5}
+      - {term: "geological survey",            match: phrase, weight: 0.8}
+      - {term: "геологическ\\w* съёмк\\w*",     match: regex,  lang: ru, weight: 0.8}
+      - {term: "геологическ\\w* съемк\\w*",     match: regex,  lang: ru, weight: 0.8}
+      - {term: "exploration",                  match: prefix, weight: 0.4}
+      - {term: "разведк",                      match: prefix, lang: ru, weight: 0.5}
+      - {term: "reservoir",                    match: prefix, weight: 0.5}
+      - {term: "коллектор",                    match: prefix, lang: ru, weight: 0.4}
+      - {term: "oil field",                    match: phrase, weight: 0.6}
+      - {term: "нефтегаз",                     match: prefix, lang: ru, weight: 0.6}
+      - {term: "well log",                     match: phrase, weight: 0.8}
+      - {term: "каротаж",                      match: prefix, lang: ru, weight: 0.8}
+      - {term: "hyperspectral",                match: prefix, weight: 0.5}
+      - {term: "гиперспектральн",              match: prefix, lang: ru, weight: 0.5}
+      - {term: "magnetotelluric",              match: prefix, weight: 0.8}
+      - {term: "магнитотеллур",                match: prefix, lang: ru, weight: 0.8}
+      - {term: "resistivity",                  match: prefix, weight: 0.6}
+      - {term: "электроразведк",               match: prefix, lang: ru, weight: 0.8}
+      - {term: "georadar",                     match: prefix, weight: 0.9}
+      - {term: "ground penetrating radar",     match: phrase, weight: 0.9}
+      - {term: "GPR",                          match: token,  weight: 0.7}
+      - {term: "георадар",                     match: prefix, lang: ru, weight: 0.9}
+      - {term: "gravimetr",                    match: prefix, weight: 0.7}
+      - {term: "гравиметр",                    match: prefix, lang: ru, weight: 0.7}
+      # --- грунты и породы ------------------------------------------------------
       - {term: "soil",                         match: prefix, weight: 0.8}
-      - {term: "soils",                        match: token,  weight: 0.8}
-      - {term: "ground",                       match: token,  weight: 0.5}
-      - {term: "subsurface",                   match: prefix, weight: 0.7}
+      - {term: "грунт",                        match: prefix, lang: ru, weight: 1.0}
       - {term: "subsoil",                      match: prefix, weight: 0.9}
-      - {term: "sediment",                     match: prefix, weight: 0.5}
-      - {term: "clay",                         match: prefix, weight: 0.7}
-      - {term: "sand",                         match: token,  weight: 0.6}
-      - {term: "sands",                        match: token,  weight: 0.6}
-      - {term: "silt",                         match: prefix, weight: 0.7}
-      - {term: "gravel",                       match: prefix, weight: 0.7}
-      - {term: "peat",                         match: prefix, weight: 0.7}
-      - {term: "loess",                        match: prefix, weight: 0.9}
-      - {term: "rock mass",                    match: phrase, weight: 1.0}
+      - {term: "subsurface",                   match: prefix, weight: 0.7}
+      - {term: "недр",                         match: prefix, lang: ru, weight: 0.6}
+      - {term: "ground",                       match: token,  weight: 0.5}
       - {term: "rock",                         match: token,  weight: 0.4}
       - {term: "rocks",                        match: token,  weight: 0.4}
-      - {term: "bedrock",                      match: prefix, weight: 0.8}
-      - {term: "weathering",                   match: prefix, weight: 0.5}
-      - {term: "geolog",                       match: prefix, weight: 0.6}
-      - {term: "geotechn",                     match: prefix, weight: 1.0}
-      - {term: "geoscien",                     match: prefix, weight: 0.5}
-      - {term: "hydrogeolog",                  match: prefix, weight: 0.9}
-      - {term: "groundwater",                  match: prefix, weight: 0.8}
-      - {term: "aquifer",                      match: prefix, weight: 0.7}
-      - {term: "geocryolog",                   match: prefix, weight: 1.0}
-      - {term: "frozen soil",                  match: phrase, weight: 1.0}
-      - {term: "frozen ground",                match: phrase, weight: 1.0}
-      - {term: "cryosphere",                   match: prefix, weight: 0.6}
-      - {term: "geophysic",                    match: prefix, weight: 0.7}
-      - {term: "seismic",                      match: prefix, weight: 0.5}
-      - {term: "earthquake",                   match: prefix, weight: 0.6}
-      - {term: "geodes",                       match: prefix, weight: 0.5}
-      - {term: "geomatic",                     match: prefix, weight: 0.5}
-      - {term: "surveying",                    match: prefix, weight: 0.5}
-      - {term: "terrain",                      match: prefix, weight: 0.4}
-      - {term: "topograph",                    match: prefix, weight: 0.4}
-      - {term: "digital elevation model",      match: phrase, weight: 0.6}
-      - {term: "geospatial",                   match: prefix, weight: 0.5}
-      - {term: "GIS",                          match: token,  weight: 0.4}
-      - {term: "natural hazard",               match: phrase, weight: 0.8}
-      - {term: "flood",                        match: prefix, weight: 0.5}
-      - {term: "erosion",                      match: prefix, weight: 0.5}
-      - {term: "porous media",                 match: phrase, weight: 0.7}
-      - {term: "porous medium",                match: phrase, weight: 0.7}
-      - {term: "granular",                     match: prefix, weight: 0.6}
-      - {term: "geomaterial",                  match: prefix, weight: 1.0}
-      - {term: "geothermal",                   match: prefix, weight: 0.5}
-      - {term: "energy pile",                  match: phrase, weight: 1.0}
-      - {term: "carbon storage",               match: phrase, weight: 0.4}
-      - {term: "CO2 storage",                  match: phrase, weight: 0.4}
-      # --- русский ----------------------------------------------------------------
-      - {term: "грунт",                        match: prefix, lang: ru, weight: 1.0}
+      - {term: "rock mass",                    match: phrase, weight: 1.0}
       - {term: "пород",                        match: prefix, lang: ru, weight: 0.5}
       - {term: "скальн",                       match: prefix, lang: ru, weight: 0.8}
-      - {term: "глин",                         match: prefix, lang: ru, weight: 0.6}
+      - {term: "bedrock",                      match: prefix, weight: 0.8}
+      - {term: "sediment",                     match: prefix, weight: 0.5}
+      - {term: "отложени",                     match: prefix, lang: ru, weight: 0.5}
+      - {term: "clay",                         match: prefix, weight: 0.7}
+      - {term: "глин",                         match: prefix, lang: ru, weight: 0.7}
+      - {term: "sand",                         match: token,  weight: 0.6}
+      - {term: "sands",                        match: token,  weight: 0.6}
+      - {term: "sandy",                        match: token,  weight: 0.6}
       - {term: "песк",                         match: prefix, lang: ru, weight: 0.6}
       - {term: "песчан",                       match: prefix, lang: ru, weight: 0.6}
+      - {term: "silt",                         match: prefix, weight: 0.7}
       - {term: "суглин",                       match: prefix, lang: ru, weight: 0.9}
       - {term: "супес",                        match: prefix, lang: ru, weight: 0.9}
+      - {term: "gravel",                       match: prefix, weight: 0.7}
+      - {term: "гравий",                       match: prefix, lang: ru, weight: 0.7}
+      - {term: "peat",                         match: prefix, weight: 0.7}
       - {term: "торф",                         match: prefix, lang: ru, weight: 0.7}
+      - {term: "loess",                        match: prefix, weight: 0.9}
       - {term: "лёсс",                         match: prefix, lang: ru, weight: 0.9}
       - {term: "лесс",                         match: prefix, lang: ru, weight: 0.7}
-      - {term: "геолог",                       match: prefix, lang: ru, weight: 0.6}
-      - {term: "гидрогеолог",                  match: prefix, lang: ru, weight: 0.9}
-      - {term: "подземн вод",                  match: phrase, lang: ru, weight: 0.8}
-      - {term: "подземных вод",                match: phrase, lang: ru, weight: 0.8}
-      - {term: "геокриолог",                   match: prefix, lang: ru, weight: 1.0}
-      - {term: "мерзл",                        match: prefix, lang: ru, weight: 1.0}
-      - {term: "криолитозон",                  match: prefix, lang: ru, weight: 1.0}
-      - {term: "геофизик",                     match: prefix, lang: ru, weight: 0.7}
-      - {term: "геофизическ",                  match: prefix, lang: ru, weight: 0.7}
-      - {term: "землетрясен",                  match: prefix, lang: ru, weight: 0.6}
-      - {term: "геодез",                       match: prefix, lang: ru, weight: 0.5}
-      - {term: "рельеф",                       match: prefix, lang: ru, weight: 0.4}
-      - {term: "ГИС",                          match: token,  lang: ru, weight: 0.4}
-      - {term: "опасн геологическ",            match: phrase, lang: ru, weight: 0.9}
-      - {term: "экзогенн",                     match: prefix, lang: ru, weight: 0.8}
+      - {term: "granular",                     match: prefix, weight: 0.6}
+      - {term: "сыпуч",                        match: prefix, lang: ru, weight: 0.6}
+      - {term: "porous media",                 match: phrase, weight: 0.7}
+      - {term: "porous medium",                match: phrase, weight: 0.7}
       - {term: "пористая среда",               match: phrase, lang: ru, weight: 0.7}
+      - {term: "пористой среде",               match: phrase, lang: ru, weight: 0.7}
+      - {term: "weathering",                   match: prefix, weight: 0.5}
+      - {term: "выветриван",                   match: prefix, lang: ru, weight: 0.5}
+      - {term: "frozen soil",                  match: phrase, weight: 1.0}
+      - {term: "frozen ground",                match: phrase, weight: 1.0}
+      - {term: "permafrost",                   match: prefix, weight: 1.0}
+      - {term: "мерзл",                        match: prefix, lang: ru, weight: 1.0}
+      - {term: "мёрзл",                        match: prefix, lang: ru, weight: 1.0}
+      - {term: "криолитозон",                  match: prefix, lang: ru, weight: 1.0}
+      - {term: "groundwater",                  match: prefix, weight: 0.8}
+      - {term: "aquifer",                      match: prefix, weight: 0.7}
+      - {term: "водоносн",                     match: prefix, lang: ru, weight: 0.7}
+      - {term: "подземн\\w* вод\\w*",          match: regex,  lang: ru, weight: 0.8}
+      - {term: "грунтов\\w* вод\\w*",          match: regex,  lang: ru, weight: 0.8}
+      - {term: "seepage",                      match: prefix, weight: 0.8}
       - {term: "фильтраци",                    match: prefix, lang: ru, weight: 0.6}
-      - {term: "геотермальн",                  match: prefix, lang: ru, weight: 0.5}
+      # --- фундаменты и строительство на грунте ----------------------------------
+      - {term: "foundation",                   match: prefix, weight: 0.8}
+      - {term: "фундамент",                    match: prefix, lang: ru, weight: 1.0}
+      - {term: "основани",                     match: prefix, lang: ru, weight: 0.6}
+      - {term: "pile",                         match: token,  weight: 0.8}
+      - {term: "piles",                        match: token,  weight: 0.8}
+      - {term: "piled",                        match: token,  weight: 0.8}
+      - {term: "свай",                         match: prefix, lang: ru, weight: 1.0}
+      - {term: "footing",                      match: prefix, weight: 0.8}
+      - {term: "excavat",                      match: prefix, weight: 0.8}
+      - {term: "котлован",                     match: prefix, lang: ru, weight: 1.0}
+      - {term: "выемк",                        match: prefix, lang: ru, weight: 0.6}
+      - {term: "earthwork",                    match: prefix, weight: 1.0}
+      - {term: "земляны",                      match: prefix, lang: ru, weight: 0.8}
+      - {term: "embankment",                   match: prefix, weight: 0.9}
+      - {term: "насып",                        match: prefix, lang: ru, weight: 1.0}
+      - {term: "retaining",                    match: prefix, weight: 0.8}
+      - {term: "подпорн",                      match: prefix, lang: ru, weight: 1.0}
+      - {term: "tunnel",                       match: prefix, weight: 0.9}
+      - {term: "тоннел",                       match: prefix, lang: ru, weight: 1.0}
+      - {term: "туннел",                       match: prefix, lang: ru, weight: 1.0}
+      - {term: "underground",                  match: prefix, weight: 0.7}
+      - {term: "подземн",                      match: prefix, lang: ru, weight: 0.8}
+      - {term: "dam",                          match: token,  weight: 0.7}
+      - {term: "dams",                         match: token,  weight: 0.7}
+      - {term: "плотин",                       match: prefix, lang: ru, weight: 1.0}
+      - {term: "дамб",                         match: prefix, lang: ru, weight: 1.0}
+      - {term: "levee",                        match: prefix, weight: 0.9}
+      - {term: "slope",                        match: prefix, weight: 0.7}
+      - {term: "склон",                        match: prefix, lang: ru, weight: 0.8}
+      - {term: "откос",                        match: prefix, lang: ru, weight: 0.9}
+      - {term: "landslide",                    match: prefix, weight: 1.0}
+      - {term: "оползн",                       match: prefix, lang: ru, weight: 1.0}
+      - {term: "subsidence",                   match: prefix, weight: 1.0}
+      - {term: "просад",                       match: prefix, lang: ru, weight: 1.0}
+      - {term: "settlement",                   match: prefix, weight: 0.6}
+      - {term: "осадк",                        match: prefix, lang: ru, weight: 0.7}
+      - {term: "sinkhole",                     match: prefix, weight: 1.0}
+      - {term: "karst",                        match: prefix, weight: 0.9}
+      - {term: "карст",                        match: prefix, lang: ru, weight: 0.9}
+      - {term: "liquefac",                     match: prefix, weight: 1.0}
+      - {term: "разжижен",                     match: prefix, lang: ru, weight: 1.0}
+      - {term: "consolidat",                   match: prefix, weight: 0.6}
+      - {term: "консолидац",                   match: prefix, lang: ru, weight: 0.9}
+      - {term: "compaction",                   match: prefix, weight: 0.7}
+      - {term: "уплотнен",                     match: prefix, lang: ru, weight: 0.7}
+      - {term: "bearing capacity",             match: phrase, weight: 1.0}
+      - {term: "несущ",                        match: prefix, lang: ru, weight: 0.8}
+      - {term: "shear strength",               match: phrase, weight: 1.0}
+      - {term: "сдвиг",                        match: prefix, lang: ru, weight: 0.6}
+      - {term: "pore pressure",                match: phrase, weight: 1.0}
+      - {term: "поров",                        match: prefix, lang: ru, weight: 0.8}
+      - {term: "grout",                        match: prefix, weight: 0.8}
+      - {term: "цементац",                     match: prefix, lang: ru, weight: 0.8}
+      - {term: "инъекц",                       match: prefix, lang: ru, weight: 0.6}
+      - {term: "borehole",                     match: prefix, weight: 0.9}
+      - {term: "скважин",                      match: prefix, lang: ru, weight: 0.8}
+      - {term: "буров",                        match: prefix, lang: ru, weight: 0.6}
+      - {term: "drilling",                     match: prefix, weight: 0.5}
+      - {term: "site investigation",           match: phrase, weight: 1.0}
+      - {term: "изыскан",                      match: prefix, lang: ru, weight: 1.0}
+      - {term: "зондирован",                   match: prefix, lang: ru, weight: 1.0}
+      - {term: "penetration test",             match: phrase, weight: 1.0}
+      - {term: "mining",                       match: prefix, weight: 0.6}
+      - {term: "горн",                         match: prefix, lang: ru, weight: 0.5}
+      - {term: "шахт",                         match: prefix, lang: ru, weight: 0.7}
+      - {term: "карьер",                       match: prefix, lang: ru, weight: 0.7}
+      - {term: "quarry",                       match: prefix, weight: 0.6}
+      - {term: "tailings",                     match: prefix, weight: 1.0}
+      - {term: "хвостохранилищ",               match: prefix, lang: ru, weight: 1.0}
+      - {term: "civil engineering",            match: phrase, weight: 1.0}
+      - {term: "construction",                 match: prefix, weight: 0.5}
+      - {term: "строительств",                 match: prefix, lang: ru, weight: 1.0}
+      - {term: "строительн",                   match: prefix, lang: ru, weight: 0.8}
+      - {term: "building",                     match: prefix, weight: 0.4}
+      - {term: "здани",                        match: prefix, lang: ru, weight: 0.8}
+      - {term: "сооружени",                    match: prefix, lang: ru, weight: 0.9}
+      - {term: "infrastructure",               match: prefix, weight: 0.6}
+      - {term: "инфраструктур",                match: prefix, lang: ru, weight: 0.6}
+      - {term: "bridge",                       match: prefix, weight: 0.7}
+      - {term: "мост",                         match: prefix, lang: ru, weight: 0.7}
+      - {term: "railway",                      match: prefix, weight: 0.8}
+      - {term: "железнодорожн",                match: prefix, lang: ru, weight: 0.8}
+      - {term: "roadbed",                      match: prefix, weight: 1.0}
+      - {term: "highway",                      match: prefix, weight: 0.7}
+      - {term: "pavement",                     match: prefix, weight: 0.8}
+      - {term: "дорог",                        match: prefix, lang: ru, weight: 0.7}
+      - {term: "дорожн",                       match: prefix, lang: ru, weight: 0.7}
+      - {term: "pipeline",                     match: prefix, weight: 0.7}
+      - {term: "трубопровод",                  match: prefix, lang: ru, weight: 0.8}
+      - {term: "hydraulic structure",          match: phrase, weight: 1.0}
+      - {term: "гидротехн",                    match: prefix, lang: ru, weight: 1.0}
+      - {term: "offshore",                     match: prefix, weight: 0.7}
+      - {term: "шельф",                        match: prefix, lang: ru, weight: 0.7}
+      - {term: "monitoring",                   match: prefix, weight: 0.4}
+      - {term: "мониторинг",                   match: prefix, lang: ru, weight: 0.5}
+      - {term: "InSAR",                        match: token,  weight: 1.0}
+      - {term: "интерферометр",                match: prefix, lang: ru, weight: 0.9}
+      - {term: "lidar",                        match: prefix, weight: 0.7}
+      - {term: "лидар",                        match: prefix, lang: ru, weight: 0.7}
+      - {term: "remote sensing",               match: phrase, weight: 0.7}
+      - {term: "дистанционн\\w* зондирован\\w*", match: regex, lang: ru, weight: 0.8}
+      - {term: "natural hazard",               match: phrase, weight: 0.8}
+      - {term: "опасн\\w* (геологическ|природн)\\w* (процесс|явлен)\\w*", match: regex, lang: ru, weight: 0.9}
+      - {term: "flood",                        match: prefix, weight: 0.5}
+      - {term: "паводк",                       match: prefix, lang: ru, weight: 0.5}
+      - {term: "erosion",                      match: prefix, weight: 0.5}
+      - {term: "эрози",                        match: prefix, lang: ru, weight: 0.5}
+      - {term: "digital elevation model",      match: phrase, weight: 0.6}
+      - {term: "цифров\\w* модел\\w* рельеф\\w*", match: regex, lang: ru, weight: 0.6}
+      - {term: "terrain",                      match: prefix, weight: 0.4}
+      - {term: "рельеф",                       match: prefix, lang: ru, weight: 0.4}
+      - {term: "GIS",                          match: token,  weight: 0.4}
+      - {term: "ГИС",                          match: token,  lang: ru, weight: 0.4}
+      - {term: "(?<!\\w)сп \\d",                match: regex,  lang: ru, weight: 0.5}
+      - {term: "СНиП",                         match: token,  lang: ru, weight: 0.8}
+      - {term: "ГОСТ",                         match: token,  lang: ru, weight: 0.4}
 
   # ---------------------------------------------------------------------------
   - id: pure_geology
-    name: "Признаки чистой геологии (режут только без инженерного якоря)"
+    name: "Признаки чистой геологии (выключена: в базу течёт всё «гео»)"
     mode: none_of
     hard: false
+    enabled: false
     penalty: 0.0
     fields: [title, abstract, keywords]
     weight: 0.0
@@ -916,6 +1108,8 @@ sources:
       - {id: oa_dt,       enabled: true, priority: 7,  query: 'digital twin geotechnical tunnel dam foundation'}
       - {id: oa_unsat,    enabled: true, priority: 7,  query: 'unsaturated soil constitutive model'}
       - {id: oa_hydro,    enabled: true, priority: 6,  query: 'hydrogeology groundwater engineering geology'}
+      - {id: oa_geophys,  enabled: true, priority: 6,  query: 'engineering geophysics seismic survey ground penetrating radar'}
+      - {id: oa_rockeng,  enabled: true, priority: 6,  query: 'rock mass classification rock slope underground excavation'}
       # --- русские: OpenAlex индексирует российские журналы с русскими заголовками
       - {id: oa_ru_geo,   enabled: true, priority: 10, query: 'инженерная геология геотехника'}
       - {id: oa_ru_soil,  enabled: true, priority: 10, query: 'механика грунтов основания фундаменты'}
@@ -927,6 +1121,8 @@ sources:
       - {id: oa_ru_road,  enabled: true, priority: 7,  query: 'земляное полотно насыпь автомобильные дороги грунт'}
       - {id: oa_ru_hydro, enabled: true, priority: 7,  query: 'гидротехнические сооружения плотина дамба грунт'}
       - {id: oa_ru_tun,   enabled: true, priority: 7,  query: 'тоннель метрополитен горные выработки'}
+      - {id: oa_ru_geoph, enabled: true, priority: 6,  query: 'инженерная геофизика сейсморазведка георадар'}
+      - {id: oa_ru_geol,  enabled: true, priority: 6,  query: 'геологические изыскания скважины грунтовые воды'}
 
   crossref:
     enabled: true
@@ -1004,6 +1200,8 @@ sources:
       - {id: cr_ru_izysk, enabled: true, priority: 8, query: 'инженерные изыскания зондирование'}
       - {id: cr_ru_perma, enabled: true, priority: 8, query: 'мерзлые грунты геокриология'}
       - {id: cr_ru_road, enabled: true, priority: 7,  query: 'земляное полотно дорожное строительство'}
+      - {id: cr_ru_geoph, enabled: true, priority: 6, query: 'инженерная геофизика георадар сейсморазведка'}
+      - {id: cr_geophys, enabled: true, priority: 6,  query: 'engineering geophysics site characterization'}
 
   semantic_scholar:
     enabled: true

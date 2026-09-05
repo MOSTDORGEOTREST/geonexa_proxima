@@ -65,7 +65,8 @@ IRRELEVANT = [
     ),
 ]
 
-#: Чистая геология и всё с планет — без инженерного якоря не нужно.
+#: Чистая геология: по решению владельца в базу течёт всё «гео», отсев делает
+#: пайплайн дальше. Группа pure_geology осталась в файле выключенной.
 PURE_GEOLOGY = [
     ("Biostratigraphy of the Jurassic sediments of the Volga basin", ""),
     ("Zircon U-Pb geochronology of granites in the Urals", "Petrogenesis."),
@@ -125,10 +126,29 @@ def test_irrelevant_items_are_rejected(matcher: HarvestMatcher, title: str, abst
 
 
 @pytest.mark.parametrize(("title", "abstract"), PURE_GEOLOGY)
-def test_pure_geology_without_engineering_anchor_is_rejected(
+def test_pure_geology_flows_into_the_corpus(
     matcher: HarvestMatcher, title: str, abstract: str
 ) -> None:
     result = matcher.match(title, abstract)
+    assert result.decision is not Decision.REJECTED, matcher.explain(result)
+
+
+def test_pure_geology_group_is_kept_but_disabled(profile: HarvestProfile) -> None:
+    """Выключатель на будущее: включить и вернуть в satisfy — без правки кода."""
+
+    assert profile.group("pure_geology").enabled is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "A new optimizer for large language models",
+        "Спутниковые снимки в сельском хозяйстве",
+        "Quantum error correction with surface codes",
+    ],
+)
+def test_non_geo_titles_do_not_pass(matcher: HarvestMatcher, title: str) -> None:
+    result = matcher.match(title, None)
     assert result.decision is Decision.REJECTED, matcher.explain(result)
 
 

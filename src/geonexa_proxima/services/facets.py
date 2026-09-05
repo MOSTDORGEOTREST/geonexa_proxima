@@ -102,6 +102,28 @@ class ProfileFacet:
         return sha256(self.text.encode("utf-8")).hexdigest()[:16]
 
 
+def without_taxonomy(compiled_text: str) -> str:
+    """Профиль без раздела базовой таксономии — то, что написал человек.
+
+    Таксономия одна на всех и занимает больше места, чем сам профиль; LLM,
+    объясняющей «зачем это вам», она только мешает: объяснение начинает
+    ссылаться на общий список тем, а не на интересы подписчика.
+    """
+
+    parts = sections(compiled_text)
+    kept = [
+        f"{name}:\n{parts[name]}"
+        for name in (
+            DESCRIPTION_SECTION,
+            DESCRIPTION_EN_SECTION,
+            INTERESTS_SECTION,
+            SIGNALS_SECTION,
+        )
+        if parts.get(name)
+    ]
+    return "\n\n".join(kept) if kept else compiled_text
+
+
 def sections(compiled_text: str) -> dict[str, str]:
     """Разобрать `compiled_text` на разделы, которые писал компилятор.
 
@@ -263,9 +285,16 @@ def with_full_profile(compiled_text: str, facets: list[ProfileFacet]) -> list[Pr
 
     Полный профиль остаётся в списке всегда: он ловит материалы на стыке тем,
     которые ни в одну грань по отдельности не попадают.
+
+    Базовая таксономия в вектор «весь профиль» не входит. Она одна на всех и
+    в разы длиннее описания, и вектор целого профиля был по сути вектором
+    таксономии: у двух подписчиков с разными интересами «полные профили»
+    находили одно и то же. Таксономия остаётся в `compiled_text` для
+    объяснений и обратной совместимости, но искать по ней незачем.
     """
 
-    return [ProfileFacet(index=FULL_PROFILE, text=compiled_text, source="profile"), *facets]
+    text = without_taxonomy(compiled_text)
+    return [ProfileFacet(index=FULL_PROFILE, text=text, source="profile"), *facets]
 
 
 def _clean(value: str) -> str:

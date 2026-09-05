@@ -22,6 +22,7 @@ from geonexa_proxima.services.facets import (
     sections,
     split_sentences,
     with_full_profile,
+    without_taxonomy,
 )
 from geonexa_proxima.services.personalization import PersonalizationService, _apply_facet_quota
 from geonexa_proxima.services.profiles import ProfileCompiler
@@ -71,7 +72,11 @@ def test_facet_zero_is_always_the_whole_profile() -> None:
 
     assert facets[0].index == FULL_PROFILE
     assert facets[0].is_full_profile
-    assert facets[0].text == PROFILE
+    # Без базовой таксономии: она одна на всех и не должна определять вектор
+    # «весь профиль». Само описание и явные темы — на месте.
+    assert facets[0].text == without_taxonomy(PROFILE)
+    assert "Base taxonomy" not in facets[0].text
+    assert "Profile description" in facets[0].text
     # Номера остальных идут подряд с единицы: это ключи кэша векторов.
     assert [facet.index for facet in facets[1:]] == list(range(1, len(facets)))
     assert not any(facet.is_full_profile for facet in facets[1:])

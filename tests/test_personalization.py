@@ -104,6 +104,8 @@ async def test_personalization_fuses_all_scores_and_persists_snapshot() -> None:
 
     results = await service.rank(profile, limit=1)
 
-    assert results[0].personal_score == pytest.approx(0.885)
+    # семантика 0.8 → 1.0 в растянутой шкале (0.4), общая 0.8 (0.2), интерес 1.0
+    # (0.1), реранкер 0.9 (0.225)
+    assert results[0].personal_score == pytest.approx(0.925)
     assert profile_repository.saved["profile_version"] == 2
     assert profile_vectors.saved is True

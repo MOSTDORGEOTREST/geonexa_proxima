@@ -35,11 +35,12 @@
 
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --wrap: min(1600px, 96vw);
-  --row: 38px;
-  --gap: 12px;
-  --r-card: 16px;
-  --r-panel: 20px;
-  --r-field: 10px;
+  /* Плотность: админку читают, а не листают — строки, кнопки и поля ужаты. */
+  --row: 32px;
+  --gap: 10px;
+  --r-card: 12px;
+  --r-panel: 14px;
+  --r-field: 8px;
   --r-pill: 99px;
   --dur: 0.18s;
 
@@ -105,8 +106,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-s);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13.5px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -121,18 +122,18 @@ h3 {
 
 h1 {
   font-weight: 800;
-  font-size: clamp(24px, 2.4vw, 34px);
+  font-size: clamp(20px, 1.8vw, 26px);
   line-height: 1.05;
 }
 
 h2 {
   font-weight: 600;
-  font-size: 20px;
+  font-size: 16px;
 }
 
 h3 {
   font-weight: 600;
-  font-size: 16px;
+  font-size: 14px;
 }
 
 a {
@@ -168,7 +169,7 @@ code,
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-card);
-  padding: 18px;
+  padding: 12px 14px;
 }
 
 .panel {
@@ -183,8 +184,8 @@ code,
   align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 4px 16px;
-  padding: 16px 18px;
+  gap: 2px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -199,7 +200,7 @@ code,
    доходить до рамки. Всё остальное — формы, текст, списки — живёт в .body:
    без обёртки содержимое встаёт вплотную к рамке, и панель выглядит сломанной. */
 .panel > .body {
-  padding: 16px 18px 18px;
+  padding: 12px 14px 14px;
   display: grid;
   gap: var(--gap);
   align-content: start;
@@ -209,11 +210,11 @@ code,
    :where() держит нулевую специфичность — страница переопределит его чем
    угодно, вплоть до одного класса. */
 .panel > :where(form, p, h3, pre, ul, ol, dl, details, fieldset):not(.empty) {
-  padding-inline: 18px;
+  padding-inline: 14px;
 }
 
 .panel > :where(form, pre, ul, ol, dl, details, fieldset):last-child {
-  padding-bottom: 18px;
+  padding-bottom: 14px;
 }
 
 .grid {
@@ -241,7 +242,7 @@ code,
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-card);
-  padding: 14px 16px;
+  padding: 10px 12px;
   display: grid;
   gap: 2px;
   align-content: start;
@@ -250,7 +251,7 @@ code,
 .tile .value {
   font-family: var(--font-d);
   font-weight: 600;
-  font-size: 26px;
+  font-size: 22px;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
@@ -293,13 +294,13 @@ th {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
-  padding: 10px 12px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 td {
-  padding: 0 12px;
+  padding: 0 10px;
   height: var(--row);
   border-bottom: 1px solid var(--border-soft);
   vertical-align: middle;
@@ -318,12 +319,13 @@ tbody tr:hover {
 button,
 .btn {
   font: inherit;
-  font-size: 13.5px;
+  font-size: 12.5px;
   border-radius: var(--r-pill);
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text);
-  padding: 8px 16px;
+  padding: 5px 12px;
+  line-height: 1.3;
   cursor: pointer;
   transition:
     background var(--dur) var(--ease),
@@ -356,12 +358,12 @@ input,
 select,
 textarea {
   font: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--r-field);
-  padding: 9px 12px;
+  padding: 6px 10px;
   width: 100%;
 }
 
@@ -420,9 +422,9 @@ label .hint {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 10px;
+  padding: 2px 8px;
   border-radius: var(--r-pill);
-  font-size: 12px;
+  font-size: 11.5px;
   border: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -463,7 +465,7 @@ label .hint {
 }
 
 .empty {
-  padding: 28px 18px;
+  padding: 18px 14px;
   text-align: center;
   color: var(--muted);
 }

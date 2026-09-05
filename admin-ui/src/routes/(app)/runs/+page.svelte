@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import Pill from '$lib/components/Pill.svelte';
-	import ScheduleCard from '$lib/components/ScheduleCard.svelte';
+	import ScheduleRow from '$lib/components/ScheduleRow.svelte';
 	import { once } from '$lib/once';
 	import { when, duration } from '$lib/charts/format';
 	import { RUN_STATE_LABELS, STAGES, byRecency, isLive, isScheduled } from '$lib/flows';
@@ -77,15 +77,12 @@
 {/if}
 
 <!-- Этапы конвейера: собрали → отобрали → отправили → прибрали. В каждом —
-     кнопки-пресеты для частых запусков и сами расписания с редактором. -->
+     таблица расписаний и кнопки-пресеты частых запусков. -->
 {#each STAGES as stage}
 	{@const rows = schedules.filter((row: any) => stage.kinds.includes(row.kind))}
 	<section class="panel stage">
 		<header>
-			<div>
-				<h2>{stage.title}</h2>
-				<p class="muted small">{stage.summary}</p>
-			</div>
+			<h2 title={stage.summary}>{stage.title}</h2>
 			<div class="presets">
 				{#each stage.actions as action}
 					{@const target = byKey.get(action.key)}
@@ -95,34 +92,50 @@
 						{#if action.parameters}
 							<input type="hidden" name="preset" value={JSON.stringify(action.parameters)} />
 						{/if}
-						<button
-							type="submit"
-							class:btn-primary={action.primary}
-							disabled={!canRun || !target}
-						>
+						<button type="submit" class:btn-primary={action.primary} disabled={!canRun || !target}>
 							{action.label}
 						</button>
 					</form>
 				{/each}
 			</div>
 		</header>
-		<div class="cards">
-			{#each rows as row (row.id)}
-				<ScheduleCard schedule={row} {form} {canRun} />
-			{:else}
-				<p class="empty">Расписаний этого этапа в базе нет — сидирование не отработало.</p>
-			{/each}
-		</div>
+		{#if rows.length}
+			<div class="table-scroll">
+				<table class="schedules">
+					<thead>
+						<tr>
+							<th>Флоу</th>
+							<th>Период</th>
+							<th>Ближайший</th>
+							<th>Параметры</th>
+							<th>Последний</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each rows as row (row.id)}
+							<ScheduleRow schedule={row} {form} {canRun} />
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{:else}
+			<p class="empty">Расписаний этого этапа в базе нет — сидирование не отработало.</p>
+		{/if}
 	</section>
 {/each}
 
 {#if orphans.length}
 	<section class="panel stage">
 		<header><h2>Прочее</h2></header>
-		<div class="cards">
-			{#each orphans as row (row.id)}
-				<ScheduleCard schedule={row} {form} {canRun} />
-			{/each}
+		<div class="table-scroll">
+			<table class="schedules">
+				<tbody>
+					{#each orphans as row (row.id)}
+						<ScheduleRow schedule={row} {form} {canRun} />
+					{/each}
+				</tbody>
+			</table>
 		</div>
 	</section>
 {/if}
@@ -217,33 +230,23 @@
 <style>
 	.note {
 		max-width: 78ch;
-		font-size: 13px;
+		font-size: 12.5px;
 	}
 
 	.small {
 		font-size: 12px;
 	}
 
-	.stage {
-		margin-bottom: var(--gap);
-	}
-
 	.stage > header {
-		align-items: flex-start;
-	}
-
-	.stage h2 {
-		margin-bottom: 2px;
-	}
-
-	.stage header p {
-		max-width: 70ch;
+		align-items: center;
+		padding-top: 6px;
+		padding-bottom: 6px;
 	}
 
 	.presets {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 8px;
+		gap: 6px;
 		justify-content: flex-end;
 	}
 
@@ -251,21 +254,20 @@
 		margin: 0;
 	}
 
-	.cards {
-		display: grid;
-		gap: 10px;
-		padding: 12px 16px 16px;
+	.presets button {
+		padding: 3px 10px;
+		font-size: 12px;
 	}
 
 	.filters {
 		display: flex;
-		gap: 8px;
+		gap: 6px;
 		align-items: center;
 	}
 
 	.filters select {
 		width: auto;
-		min-width: 160px;
+		min-width: 140px;
 	}
 
 	.params {
@@ -279,15 +281,15 @@
 	}
 
 	.actions .btn {
-		padding: 4px 12px;
-		font-size: 12.5px;
+		padding: 2px 10px;
+		font-size: 12px;
 		text-decoration: none;
 		display: inline-block;
 	}
 
 	.flash {
-		margin: 0 0 var(--gap);
-		font-size: 13px;
+		margin: 0;
+		font-size: 12.5px;
 	}
 
 	.ok {

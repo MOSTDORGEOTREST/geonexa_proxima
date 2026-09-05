@@ -14,78 +14,57 @@
 <svelte:head><title>Сбор · Проксима</title></svelte:head>
 
 <div class="spread">
-	<h1>Что мы ищем</h1>
-	{#if !data.health?.available}
-		<span class="pill pill-bad">Prefect недоступен — запуск невозможен</span>
-	{/if}
-</div>
-
-<!-- Прогон запускают отсюда: сюда приходят, когда сбор «ничего не находит»,
-     и заставлять ради одной кнопки идти в «Запуски» — лишний шаг. -->
-<section class="run">
-	<div>
-		<h2>Собрать сейчас</h2>
-		<p class="muted note">
-			Обход всех источников, отсев по терминам и глобальная оценка. Прогон общий: результат
-			увидят все подписчики, персонализация считается позже.
-		</p>
-	</div>
-	<div class="run-actions">
+	<h1>Сбор</h1>
+	<div class="row">
+		{#if !data.health?.available}
+			<span class="pill pill-bad">Prefect недоступен — запуск невозможен</span>
+		{/if}
 		<form method="POST" action="?/collect" use:once>
 			<input type="hidden" name="id" value={data.harvestSchedule?.id ?? ''} />
 			<input type="hidden" name="label" value="Сбор материалов" />
-			<button type="submit" class="btn-primary" disabled={!canRun}>Собрать статьи</button>
+			<button type="submit" class="btn-primary" disabled={!canRun} title="Вчерашние сутки плюс догон пропущенных — то же, что делает расписание">
+				Собрать
+			</button>
 		</form>
 		<form method="POST" action="?/collect" use:once>
 			<input type="hidden" name="id" value={data.harvestSchedule?.id ?? ''} />
 			<input type="hidden" name="label" value="Сбор за 30 дней" />
-			<!-- Именно days_back: lookback_hours включает запасной режим одного
-			     открытого окна, который упирается в лимит выдачи источника и
-			     молча теряет хвост. Кнопка с тем же названием на «Запусках»
-			     давно шлёт days_back — эти две расходились. -->
-			<input
-				type="hidden"
-				name="parameters"
-				value={JSON.stringify({ days_back: 30, limit_per_source: 1000 })}
-			/>
-			<button type="submit" disabled={!canRun}>Собрать за 30 дней</button>
+			<input type="hidden" name="parameters" value={JSON.stringify({ days_back: 30, limit_per_source: 1000 })} />
+			<button type="submit" disabled={!canRun} title="Тридцать суток по одним, тридцать проходов">За 30 дней</button>
+		</form>
+		<a class="btn" href="/runs" title="Период, параметры и другие расписания">Расписание</a>
+	</div>
+</div>
+
+{#if form?.error}<p class="flash err" role="alert">{form.error}</p>{/if}
+{#if form?.started}
+	<p class="flash ok" role="status">«{form.label}» — запуск поставлен в очередь Prefect.</p>
+{/if}
+{#if form?.aborted !== undefined}
+	<p class="flash ok" role="status">Снято прогонов: {form.aborted}. Теперь сбор можно запускать.</p>
+{/if}
+
+{#if data.activeRun}
+	<!-- Одновременно идёт только один сбор: пока эта запись висит, кнопки
+	     отвечают «сбор уже идёт», и без объяснения это выглядит как поломка. -->
+	<div class="active">
+		<span>
+			<b>Идёт прогон</b>
+			<span class="muted small">
+				с {when(data.activeRun.started_at)} ({data.activeRun.trigger})
+				{#if data.activeRun.stats?.days_planned}
+					· пройдено {data.activeRun.stats.days_done ?? 0} из {data.activeRun.stats.days_planned} суток,
+					отметка {when(data.activeRun.stats.heartbeat_at)}
+				{/if}
+			</span>
+		</span>
+		<form method="POST" action="?/abort" use:once>
+			<button type="submit" class="btn-danger" title="Если процесс упал, не закрыв запись: сам он подберётся только по таймауту">
+				Снять прогон
+			</button>
 		</form>
 	</div>
-	{#if form?.error}<p class="flash err" role="alert">{form.error}</p>{/if}
-	{#if form?.started}
-		<p class="flash ok" role="status">«{form.label}» — запуск поставлен в очередь Prefect.</p>
-	{/if}
-	{#if form?.aborted !== undefined}
-		<p class="flash ok" role="status">
-			Снято прогонов: {form.aborted}. Теперь сбор можно запускать.
-		</p>
-	{/if}
-
-	{#if data.activeRun}
-		<!-- Одновременно идёт только один сбор. Пока эта запись висит, кнопки
-		     выше отвечают «сбор уже идёт», и без объяснения это выглядит как
-		     поломка. -->
-		<div class="flash active">
-			<div>
-				<strong>Сейчас идёт прогон</strong>
-				<span class="muted small">
-					начат {when(data.activeRun.started_at)} ({data.activeRun.trigger})
-					{#if data.activeRun.stats?.days_planned}
-						· пройдено {data.activeRun.stats.days_done ?? 0} из {data.activeRun.stats.days_planned} суток,
-						отметка {when(data.activeRun.stats.heartbeat_at)}
-					{/if}
-				</span>
-				<p class="muted small">
-					Второй сбор параллельно не запустится. Если прогон завис — процесс упал, не
-					закрыв запись, — снимите его: сам он подберётся только по таймауту.
-				</p>
-			</div>
-			<form method="POST" action="?/abort" use:once>
-				<button type="submit" class="btn-danger">Снять прогон</button>
-			</form>
-		</div>
-	{/if}
-</section>
+{/if}
 
 <div class="two">
 	<section class="panel">
@@ -94,24 +73,13 @@
 			<span class="muted">без записи в базу</span>
 		</header>
 		<div class="body">
-			<p class="muted note">
-				Вставьте заголовок реальной статьи — увидите, какие термины сработали и какая группа не
-				выполнилась. Это дешевле, чем узнать о промахе профиля через неделю по пустому дайджесту.
-			</p>
 			<form method="POST" action="?/probe" use:enhance class="probe">
-				<label>
-					Заголовок
-					<input name="title" value={form?.title ?? ''} required />
-				</label>
-				<label>
-					Аннотация
-					<textarea name="abstract" rows="3"></textarea>
-				</label>
-				<label>
-					Журнал
-					<input name="venue" placeholder="Géotechnique" />
-				</label>
-				<button type="submit" class="btn-primary">Проверить</button>
+				<input name="title" value={form?.title ?? ''} required placeholder="Заголовок статьи — какие термины сработают и какая группа не выполнится" />
+				<textarea name="abstract" rows="2" placeholder="Аннотация (необязательно)"></textarea>
+				<div class="row">
+					<input name="venue" placeholder="Журнал (необязательно)" class="venue" />
+					<button type="submit" class="btn-primary">Проверить</button>
+				</div>
 			</form>
 
 			{#if form?.probe}
@@ -234,23 +202,17 @@
 		gap: var(--gap);
 	}
 
-	.note,
 	.small {
 		font-size: 12.5px;
 	}
 
-	.note {
-		margin: 0;
-		max-width: 70ch;
-	}
-
 	.probe {
 		display: grid;
-		gap: 10px;
+		gap: 6px;
 	}
 
-	.probe button {
-		justify-self: start;
+	.probe .venue {
+		flex: 1;
 	}
 
 	.result {
@@ -272,44 +234,9 @@
 		color: var(--critical);
 	}
 
-	.run {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--gap);
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: var(--r-panel);
-		padding: 16px 18px;
-		margin-bottom: var(--gap);
-	}
-
-	.run h2 {
-		font-size: 15px;
-		margin: 0 0 4px;
-	}
-
-	.run .note {
-		margin: 0;
-		max-width: 72ch;
-		font-size: 13px;
-	}
-
-	.run-actions {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-
-	/* Ответ на нажатие — внутри той же панели: сообщение в сотне пикселей
-	   от кнопки читается как относящееся к чему-то другому. */
 	.flash {
-		flex-basis: 100%;
 		margin: 0;
-		padding-top: 12px;
-		border-top: 1px solid var(--border-soft);
-		font-size: 13px;
+		font-size: 12.5px;
 	}
 
 	.active {
@@ -318,15 +245,14 @@
 		justify-content: space-between;
 		gap: var(--gap);
 		flex-wrap: wrap;
+		padding: 8px 12px;
+		border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+		border-radius: var(--r-card);
+		font-size: 13px;
 	}
 
-	.active p {
-		margin: 4px 0 0;
-		max-width: 68ch;
-	}
-
-	.active strong {
-		display: block;
+	.active b {
+		margin-right: 6px;
 	}
 
 	.ok {

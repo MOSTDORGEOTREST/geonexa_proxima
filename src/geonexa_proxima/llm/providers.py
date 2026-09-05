@@ -157,6 +157,80 @@ class OpenAICompatibleJSONClient(AsyncHTTPProvider):
         }
 
 
+#: Область платформы одной фразой — ею объясняются все три роли, чтобы
+#: «релевантность» у ранкера, «перенос» у аналитика и «зачем это человеку» у
+#: объяснителя означали одно и то же.
+_SCOPE = (
+    "The platform serves geotechnical engineers and engineering geologists: soil and rock "
+    "mechanics, foundations and piles, deep excavations, tunnels and underground structures, "
+    "dams, embankments and roads, slopes and landslides, liquefaction and seismic geotechnics, "
+    "permafrost, site investigation (CPT, boreholes, laboratory testing), geotechnical "
+    "monitoring and engineering geophysics, hydrogeology, and numerical / data-driven / "
+    "machine-learning methods applied to all of the above. Adjacent fields (general geology, "
+    "mining, structural and civil engineering, remote sensing) are relevant when the work "
+    "touches the ground: soils, rocks, groundwater, foundations, underground space."
+)
+
+_RANK_SYSTEM = (
+    "You are a strict triage reviewer for a scientific radar. "
+    + _SCOPE
+    + "\nYou see only metadata (title, abstract, keywords, venue, sometimes citation counts or "
+    "repository stars). Score each dimension from 0 to 10 using this rubric; use the whole "
+    "scale and do not cluster around 7.\n"
+    "- relevance: how squarely the work sits inside the platform scope. 9-10 core "
+    "geotechnics / engineering geology; 6-8 adjacent geo or construction work that clearly "
+    "involves ground; 3-5 loosely related (general earth science, structures without soil); "
+    "0-2 outside the scope.\n"
+    "- novelty: new method, data, or finding versus routine application, review, or "
+    "textbook restatement (reviews and case reports rarely exceed 4).\n"
+    "- scientific_quality: evidence visible in the metadata — real or field data, validation "
+    "against measurements, baselines, uncertainty, reproducibility (for software: tests, "
+    "documentation, stars). Unknown evidence is scored low, never guessed high.\n"
+    "- practical_value: can an engineer use this in design, monitoring, investigation or "
+    "risk assessment within a few years.\n"
+    "- importance_for_geotechnics: how much the field would miss this work.\n"
+    "- importance_for_ai: methodological contribution to ML / numerical methods; 0-2 if the "
+    "work uses no such methods.\n"
+    "- recommend_deep_analysis: true only for relevance >= 8 and (novelty >= 7 or "
+    "practical_value >= 8).\n"
+    "- categories: 1-4 short English tags (e.g. liquefaction, PINN, CPT, tunnelling, "
+    "landslide, permafrost, monitoring, constitutive-model, foundation, dataset).\n"
+    "- reason: 1-2 sentences IN RUSSIAN for an engineer reading a digest: what was done and "
+    "why it matters (or why it is weak). Do not restate the title; do not use English "
+    "except established abbreviations (CPT, InSAR, PINN, FEM).\n"
+    "The retrieval similarity is a weak hint about relevance only; never let it raise other "
+    "scores. Russian-language records are as valuable as English ones."
+)
+
+_ANALYSIS_SYSTEM = (
+    "You are a careful scientific analyst writing for geotechnical engineers. "
+    + _SCOPE
+    + "\nYou see only metadata; distinguish what the authors report from your own assessment, "
+    "and say plainly what the metadata does not tell (use «не указано»). Never invent "
+    "numbers, datasets, code availability or results. Write ALL text fields IN RUSSIAN, "
+    "concise and concrete; keep established abbreviations (CPT, InSAR, PINN, FEM, DEM). "
+    "Field guide: summary — 2-3 sentences, the essence; novelty — what is new versus prior "
+    "practice; method — approach, models, data flow; data — what data and how much, or «не "
+    "указано»; architecture — model/pipeline design if any; results — reported outcomes with "
+    "the metrics named by the authors; prior_art — what this builds on; physics_assessment — "
+    "does the approach respect soil/rock mechanics (drainage, effective stress, scale, "
+    "boundary conditions) or treat the ground as a black box; limitations — 2-5 bullet-style "
+    "phrases; geotechnical_transfer — how a practising engineer could use it, and what would "
+    "have to be checked first; research_ideas — 2-4 hypotheses phrased as testable questions; "
+    "code_available / dataset_available — true only if the metadata states it."
+)
+
+_EXPLAIN_SYSTEM = (
+    "You explain to a subscriber, IN RUSSIAN, why a source matches (or only weakly matches) "
+    "their personal research profile. "
+    + _SCOPE
+    + "\nWrite 1-2 sentences, at most 220 characters. Name the profile topic that the source "
+    "touches and what exactly in the source touches it. Be honest: if the match is shallow "
+    "(shared vocabulary, different problem), say so. Never invent claims about the source; "
+    "never restate its title. Keep established abbreviations; no other English."
+)
+
+
 class LLMRanker:
     def __init__(self, client: OpenAICompatibleJSONClient) -> None:
         self.client = client
@@ -165,13 +239,9 @@ class LLMRanker:
         source = item.model_dump(mode="json", exclude={"raw"})
         return await self.client.generate(
             RankResult,
-            system=(
-                "You are a strict scientific triage reviewer for geotechnics, geospatial "
-                "engineering, numerical methods, and applied AI. Score every numeric dimension "
-                "from 0 to 10. Treat the retrieval similarity as a hint, not as evidence."
-            ),
+            system=_RANK_SYSTEM,
             user=(
-                f"Retrieval similarity: {semantic_score:.6f}\n"
+                f"Retrieval similarity to the platform profile (cosine): {semantic_score:.3f}\n"
                 f"Source record:\n{json.dumps(source, ensure_ascii=False)}"
             ),
         )
@@ -186,11 +256,7 @@ class LLMAnalyzer:
         ranking = rank.model_dump(mode="json")
         return await self.client.generate(
             DeepAnalysis,
-            system=(
-                "You are a careful scientific analyst. Distinguish reported claims from your "
-                "assessment, explicitly expose missing evidence, and propose research ideas as "
-                "hypotheses rather than claims about the source."
-            ),
+            system=_ANALYSIS_SYSTEM,
             user=(
                 f"Source record:\n{json.dumps(source, ensure_ascii=False)}\n\n"
                 f"Prior triage:\n{json.dumps(ranking, ensure_ascii=False)}"
@@ -218,13 +284,10 @@ class LLMProfileExplainer:
         source = item.model_dump(mode="json", exclude={"raw"})
         result = await self.client.generate(
             PersonalReason,
-            system=(
-                "Explain briefly why this source is or is not relevant to the supplied personal "
-                "research profile. Do not invent claims about the source."
-            ),
+            system=_EXPLAIN_SYSTEM,
             user=(
                 f"Personal profile:\n{profile_text}\n\n"
-                f"Computed personal score: {personal_score:.4f}\n"
+                f"Computed personal score (0-1): {personal_score:.3f}\n"
                 f"Source record:\n{json.dumps(source, ensure_ascii=False)}"
             ),
         )

@@ -307,14 +307,22 @@ class RankResult(BaseModel):
     @computed_field
     @property
     def total_score(self) -> float:
-        """Формула MVP: 0.30R + 0.20N + 0.15Q + 0.20P + 0.15A."""
+        """Итог: 0.25R + 0.15N + 0.15Q + 0.20P + 0.15G + 0.10A.
+
+        Прежняя формула не включала важность для геотехники вовсе — при том,
+        что платформа геотехническая: статья про ИИ без грунтов и статья про
+        грунты без ИИ получали одинаковую итоговую оценку. Теперь предметная
+        важность весит больше методологической, а релевантность по-прежнему
+        главный множитель.
+        """
 
         return round(
-            0.30 * self.relevance
-            + 0.20 * self.novelty
+            0.25 * self.relevance
+            + 0.15 * self.novelty
             + 0.15 * self.scientific_quality
             + 0.20 * self.practical_value
-            + 0.15 * self.importance_for_ai,
+            + 0.15 * self.importance_for_geotechnics
+            + 0.10 * self.importance_for_ai,
             3,
         )
 

@@ -41,6 +41,7 @@ from geonexa_proxima.services.facets import (
     build_facets,
     interest_variants,
     with_full_profile,
+    without_taxonomy,
 )
 
 
@@ -255,7 +256,7 @@ class PersonalizationService:
                     # только полный профиль.
                     explanation = await self.explainer.explain(
                         row.item,
-                        profile_text=profile.compiled_text,
+                        profile_text=without_taxonomy(profile.compiled_text),
                         personal_score=row.personal,
                     )
                 except Exception:
@@ -334,6 +335,10 @@ class PersonalizationService:
 
         if minimum_global_score <= 0:
             return items
+        # Единица выключает обход явно: в растянутой шкале косинус 0.8 и выше
+        # уже даёт 1.0, и сравнение «не меньше единицы» пропускало бы сильные
+        # попадания при формально выключенной настройке.
+        disabled = self.settings.personal_facet_override_score >= 1
         override = _cosine_to_unit(self.settings.personal_facet_override_score)
         passing: dict[UUID, StoredItem] = {}
         for item_id, item in items.items():
@@ -341,6 +346,8 @@ class PersonalizationService:
                 continue
             if item.rank.total_score >= minimum_global_score:
                 passing[item_id] = item
+                continue
+            if disabled:
                 continue
             best = max(full_semantic.get(item_id, 0.0), facet_semantic.get(item_id, 0.0))
             if best >= override:
@@ -533,11 +540,24 @@ def _item_text(item: StoredItem) -> str:
 #: профилю сбора, а не к профилю подписчика, да ещё и смешанная с вероятностью
 #: реранкера при загрузке. Получалось, что материал, которого не нашёл никто,
 #: обгонял по семантике материал, который грань реально нашла.
-_NO_SEMANTIC_EVIDENCE = 0.5
+#: Семантика материала, которого не нашла ни одна грань и ни профиль целиком:
+#: он пришёл из общей выборки по оценке. В шкале ниже это косинус около 0.3 —
+#: «где-то рядом, но не в топе ни одного запроса».
+_NO_SEMANTIC_EVIDENCE = 0.2
+
+#: Границы шкалы косинуса, которые считаются «никак» и «полное попадание».
+#: Прежняя формула (cos + 1) / 2 растягивала весь диапазон от -1 до 1, а у
+#: реальных эмбеддингов текстов косинус живёт между 0.2 и 0.8: нерелевантная
+#: статья получала 0.65, релевантная — 0.85, и вклад семантики в личную оценку
+#: (вес 0.4) отличался на сотые. Итог определяли общая оценка и реранкер, а
+#: профиль человека почти не влиял на порядок — ровно то, ради чего
+#: персонализация существует.
+_COSINE_FLOOR = 0.2
+_COSINE_CEILING = 0.8
 
 
 def _cosine_to_unit(score: float) -> float:
-    return _clamp((float(score) + 1) / 2)
+    return _clamp((float(score) - _COSINE_FLOOR) / (_COSINE_CEILING - _COSINE_FLOOR))
 
 
 def _interest_score(

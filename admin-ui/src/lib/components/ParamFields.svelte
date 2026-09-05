@@ -40,7 +40,7 @@
 			{@const name = `${prefix}${field.key}`}
 			{@const value = values[field.key]}
 			{#if field.type === 'bool'}
-				<label class="check">
+				<label class="check" title={field.hint || undefined}>
 					<span class="row">
 						<input
 							type="checkbox"
@@ -55,10 +55,9 @@
 					<!-- Снятый флажок формой не шлётся вовсе; этот маркер говорит
 					     обработчику, что поле было и означает false. -->
 					<input type="hidden" name={`${prefix}__bool.${field.key}`} value="1" />
-					{#if field.hint}<span class="hint">{field.hint}</span>{/if}
 				</label>
 			{:else if field.choices?.length}
-				<label>
+				<label title={field.hint || undefined}>
 					{field.label}
 					<select {name}>
 						<option value="">{placeholder(field) || 'не задано'}</option>
@@ -66,10 +65,9 @@
 							<option value={choice} selected={text(value) === choice}>{choice}</option>
 						{/each}
 					</select>
-					{#if field.hint}<span class="hint">{field.hint}</span>{/if}
 				</label>
 			{:else}
-				<label>
+				<label title={field.hint || undefined}>
 					{field.label}
 					<input
 						{name}
@@ -84,7 +82,6 @@
 						value={text(value)}
 						placeholder={placeholder(field)}
 					/>
-					{#if field.hint}<span class="hint">{field.hint}</span>{/if}
 				</label>
 			{/if}
 		{/each}
@@ -96,8 +93,8 @@
 <style>
 	.fields {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-		gap: 10px 14px;
+		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+		gap: 6px 10px;
 	}
 
 	.check .row {
@@ -112,5 +109,15 @@
 
 	.small {
 		font-size: 12.5px;
+	}
+
+	.fields :global(label) {
+		font-size: 11px;
+		gap: 3px;
+	}
+
+	.fields :global(.hint) {
+		font-size: 11px;
+		line-height: 1.3;
 	}
 </style>

@@ -100,8 +100,8 @@
 	.bar {
 		display: flex;
 		align-items: center;
-		gap: 20px;
-		height: 56px;
+		gap: 16px;
+		height: 46px;
 	}
 
 	.brand {
@@ -130,7 +130,7 @@
 	nav a {
 		display: inline-flex;
 		align-items: center;
-		padding: 6px 11px;
+		padding: 4px 10px;
 		border-radius: var(--r-pill);
 		text-decoration: none;
 		color: var(--text-dim);
@@ -159,7 +159,7 @@
 	.tabs {
 		display: flex;
 		gap: 2px;
-		height: 38px;
+		height: 32px;
 		align-items: stretch;
 		overflow-x: auto;
 		scrollbar-width: none;
@@ -212,9 +212,9 @@
 	}
 
 	main {
-		padding: 22px 0 60px;
+		padding: 14px 0 48px;
 		display: grid;
-		gap: 18px;
+		gap: 12px;
 	}
 
 	/* На узком экране бренд и правый блок несжимаемы, и навигации остаётся
