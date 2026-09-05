@@ -137,6 +137,7 @@ class SQLAlchemyItemRepository:
                     publication_date=item.publication_date,
                     venue=item.venue,
                     citation_count=item.citation_count,
+                    language=_language(item),
                 )
                 session.add(model)
                 await session.flush()
@@ -296,6 +297,7 @@ class SQLAlchemyItemRepository:
         model.canonical_url = model.canonical_url or (str(item.url) if item.url else None)
         model.publication_date = model.publication_date or item.publication_date
         model.venue = model.venue or item.venue
+        model.language = model.language or _language(item)
         if item.citation_count is not None:
             model.citation_count = max(model.citation_count or 0, item.citation_count)
         model.updated_at = func.now()
@@ -464,3 +466,10 @@ class SQLAlchemyItemRepository:
             ),
             created_at=model.created_at,
         )
+
+
+def _language(item: CollectedItem) -> str | None:
+    """Код языка из источника, обрезанный под колонку; пусто — не задан."""
+
+    value = (item.language or "").strip().lower()
+    return value[:8] or None

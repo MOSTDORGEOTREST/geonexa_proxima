@@ -49,6 +49,10 @@ RELEVANT = [
         "Digital twin of a deep excavation with real-time model updating",
         "Inclinometer data drives the update loop.",
     ),
+    # Мягкий гейт: геотехнический якорь без ML тоже проходит — источники и так
+    # опрашиваются профильными запросами, а отсеивать по строгому правилу
+    # значило терять большинство собранного (332 из 385 за месяц).
+    ("Slope stability analysis using limit equilibrium methods", "No learning component."),
 ]
 
 IRRELEVANT = [
@@ -59,8 +63,25 @@ IRRELEVANT = [
         "A bibliometric review of machine learning in geotechnical engineering",
         "Publication trends.",
     ),
+]
+
+#: Чистая геология и всё с планет — без инженерного якоря не нужно.
+PURE_GEOLOGY = [
+    ("Biostratigraphy of the Jurassic sediments of the Volga basin", ""),
+    ("Zircon U-Pb geochronology of granites in the Urals", "Petrogenesis."),
+    ("Стратиграфия юрских отложений Западной Сибири", ""),
+    ("Mineral exploration using hyperspectral imaging", "Ore deposit targeting."),
+]
+
+#: Широкий охват: строительство, инженерная геология без ML, геология с
+#: инженерным якорем — всё это в корпусе нужно.
+BROAD_ACCEPTED = [
+    ("Расчёт осадки фундаментов высотных зданий на слабых грунтах", ""),
+    ("Seismic response of a reinforced concrete bridge pier on liquefiable ground", ""),
+    ("Влияние минералогического состава глин на набухание грунтов оснований", ""),
+    ("Machine learning prediction of tunnel boring machine performance", ""),
+    ("Groundwater flow modelling in a fractured aquifer", ""),
     ("Lunar regolith excavation with autonomous robots", "Planetary soil handling."),
-    ("Slope stability analysis using limit equilibrium methods", "No learning component."),
 ]
 
 
@@ -76,9 +97,18 @@ def matcher(profile: HarvestProfile) -> HarvestMatcher:
 
 def test_profile_loads_expected_groups(profile: HarvestProfile) -> None:
     keys = {group.key for group in profile.groups}
-    assert {"geo_domain", "ai_method", "geo_sensing", "hard_exclude"} <= keys
+    assert {
+        "geo_domain",
+        "ai_method",
+        "geo_sensing",
+        "construction",
+        "geo_broad",
+        "pure_geology",
+        "hard_exclude",
+    } <= keys
     assert profile.satisfy_expr
-    assert 0 < profile.keyword_score_threshold < 1
+    # Нулевой порог — осознанно: всё, что прошло satisfy, принимается сразу.
+    assert 0 <= profile.keyword_score_threshold < 1
 
 
 @pytest.mark.parametrize(("title", "abstract"), RELEVANT)
@@ -92,6 +122,20 @@ def test_relevant_items_pass(matcher: HarvestMatcher, title: str, abstract: str)
 def test_irrelevant_items_are_rejected(matcher: HarvestMatcher, title: str, abstract: str) -> None:
     result = matcher.match(title, abstract)
     assert result.decision is Decision.REJECTED, matcher.explain(result)
+
+
+@pytest.mark.parametrize(("title", "abstract"), PURE_GEOLOGY)
+def test_pure_geology_without_engineering_anchor_is_rejected(
+    matcher: HarvestMatcher, title: str, abstract: str
+) -> None:
+    result = matcher.match(title, abstract)
+    assert result.decision is Decision.REJECTED, matcher.explain(result)
+
+
+@pytest.mark.parametrize(("title", "abstract"), BROAD_ACCEPTED)
+def test_broad_engineering_scope_passes(matcher: HarvestMatcher, title: str, abstract: str) -> None:
+    result = matcher.match(title, abstract)
+    assert result.decision is not Decision.REJECTED, matcher.explain(result)
 
 
 def test_hard_exclude_blocks_regardless_of_domain_hits(matcher: HarvestMatcher) -> None:

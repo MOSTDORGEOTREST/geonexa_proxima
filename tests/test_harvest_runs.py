@@ -137,3 +137,15 @@ async def test_a_fresh_run_is_not_reclaimed_by_the_query() -> None:
     await reclaim_stale_runs.fn(_Container(engine), 90)
     sql, _ = engine.statements[0]
     assert "make_interval(mins => :minutes)" in sql
+
+
+@pytest.mark.asyncio
+async def test_reclaim_respects_the_heartbeat_of_a_long_run() -> None:
+    """Ручной сбор за квартал идёт часами: отметка после каждых суток
+    держит его живым, и ночной плановый запуск не объявляет его брошенным."""
+
+    engine = _Engine()
+    await reclaim_stale_runs.fn(_Container(engine), 90)
+    sql, _ = engine.statements[0]
+    assert "heartbeat_at" in sql
+    assert "coalesce" in sql.lower()

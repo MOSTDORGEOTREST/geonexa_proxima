@@ -161,6 +161,7 @@ class IngestionService:
         cursors: SourceCursors | None = None,
         term_counter: Any | None = None,
         logger: Any | None = None,
+        ranking_concurrency: int = 4,
     ) -> None:
         self.collectors = tuple(collectors)
         self.repository = repository
@@ -194,6 +195,7 @@ class IngestionService:
         # тогда строки про источники видно в хвосте прогона, а не в stdout
         # контейнера. Свой запасной — чтобы сервис работал и вне Prefect.
         self.logger = logger or logging.getLogger("geonexa.harvest")
+        self.ranking_concurrency = ranking_concurrency
 
     async def ingest(
         self,
@@ -303,20 +305,32 @@ class IngestionService:
             for item, score in zip(matched, rerank_scores, strict=True):
                 item.semantic_score = 0.7 * item.semantic_score + 0.3 * _unit_score(score)
 
-        for pending_item in matched:
+        # Оценка идёт параллельно, но с потолком: при широком гейте за сутки
+        # доходит до тысячи материалов, и по одному (5-10 с на вызов) сутки
+        # ранжировались бы часами. Потолок — `LIGHT_LLM_CONCURRENCY`; пул
+        # соединений с базой при этом не страдает: запись после оценки короткая.
+        semaphore = asyncio.Semaphore(max(1, self.ranking_concurrency))
+
+        async def score(pending_item: _PendingItem) -> None:
             item = pending_item.collected
             item_id = pending_item.stored.id
-            try:
-                await self.repository.set_semantic_score(item_id, pending_item.semantic_score)
-                rank = await self.ranker.rank(item, pending_item.semantic_score)
-                await self.repository.set_rank(item_id, rank)
-                stats.ranked += 1
-                if rank.recommend_deep_analysis or rank.total_score >= self.deep_analysis_threshold:
-                    analysis = await self.analyzer.analyze(item, rank)
-                    await self.repository.set_analysis(item_id, analysis)
-                    stats.analyzed += 1
-            except Exception as exc:
-                stats.note_failure("ranking", exc)
+            async with semaphore:
+                try:
+                    await self.repository.set_semantic_score(item_id, pending_item.semantic_score)
+                    rank = await self.ranker.rank(item, pending_item.semantic_score)
+                    await self.repository.set_rank(item_id, rank)
+                    stats.ranked += 1
+                    if (
+                        rank.recommend_deep_analysis
+                        or rank.total_score >= self.deep_analysis_threshold
+                    ):
+                        analysis = await self.analyzer.analyze(item, rank)
+                        await self.repository.set_analysis(item_id, analysis)
+                        stats.analyzed += 1
+                except Exception as exc:
+                    stats.note_failure("ranking", exc)
+
+        await asyncio.gather(*(score(pending_item) for pending_item in matched))
         return stats
 
     async def _apply_gate(

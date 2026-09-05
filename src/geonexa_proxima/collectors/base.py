@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, TypeAlias
@@ -37,6 +37,50 @@ def taxonomy_terms(taxonomy: TaxonomyInput) -> list[str]:
 def combined_query(query: str | None, taxonomy: TaxonomyInput) -> str:
     parts = ([query.strip()] if query and query.strip() else []) + taxonomy_terms(taxonomy)
     return " OR ".join(dict.fromkeys(parts))
+
+
+#: Пауза между запросами одного источника. Провайдеры, у которых «вежливый»
+#: пул (Crossref, OpenAlex), режут частые обращения с одного адреса, и десять
+#: запросов подряд без паузы заканчиваются 429 на третьем.
+QUERY_PAUSE_SECONDS = 0.6
+
+
+async def gather_queries(
+    queries: Sequence[str],
+    fetch: Callable[[str], Awaitable[Sequence[Any]]],
+    *,
+    limit: int,
+    key: Callable[[Any], str],
+    pause: float = QUERY_PAUSE_SECONDS,
+) -> list[Any]:
+    """Опросить источник несколькими запросами и склеить ответы без повторов.
+
+    Один склеенный через OR запрос — это то, что источники понимают хуже
+    всего: у Crossref и OpenAlex поиск нечёткий, и длинная строка из дюжины
+    условий находит меньше, чем каждое условие по отдельности. Поэтому
+    условия уходят по одному, а материал, найденный дважды, попадает в
+    результат один раз. Один упавший запрос не роняет остальные: источник
+    отвечает тем, что нашёл, а ошибка последнего запроса доезжает наверх,
+    только если не нашлось вообще ничего.
+    """
+
+    seen: dict[str, Any] = {}
+    last_error: Exception | None = None
+    for index, query in enumerate(queries):
+        if index:
+            await asyncio.sleep(pause)
+        try:
+            found = await fetch(query)
+        except Exception as error:  # ошибка одного запроса из многих
+            last_error = error
+            continue
+        for item in found:
+            seen.setdefault(key(item), item)
+        if len(seen) >= limit:
+            break
+    if not seen and last_error is not None:
+        raise last_error
+    return list(seen.values())[:limit]
 
 
 def parse_date(value: object) -> date | None:
@@ -85,7 +129,12 @@ class AsyncHTTPProvider:
                 response = await self._client.request(method, url, **kwargs)
                 response.raise_for_status()
                 return response
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as error:
+            except (httpx.TransportError, httpx.HTTPStatusError) as error:
+                # `TransportError` шире, чем таймаут и сеть: сюда входит и
+                # `RemoteProtocolError` — «peer closed connection without
+                # sending complete message body». Провайдер LLM обрывает
+                # длинный ответ именно так, и раньше это не ретраилось:
+                # материал терял оценку с первого же обрыва.
                 last_error = error
                 retryable = not isinstance(error, httpx.HTTPStatusError) or (
                     error.response.status_code == 429 or error.response.status_code >= 500

@@ -104,15 +104,18 @@ def test_explicit_interests_parse_back_from_the_compiled_text() -> None:
 def test_russian_only_interest_is_flagged() -> None:
     notes = review(_profile(interests="- positive: разжижение грунтов (weight=5)"))
 
-    assert [note.level for note in notes] == ["warning", "warning"]  # плюс пустое описание
+    # Перевод дописывается при сохранении, поэтому русская тема — подсказка,
+    # а не предупреждение; второе замечание — про пустое описание.
+    assert sorted(note.level for note in notes) == ["hint", "warning"]
     assert any("разжижение грунтов" in note.subject for note in notes)
 
 
 def test_russian_only_minus_interest_is_an_error_not_a_warning() -> None:
-    """Минус-тема без английского написания не работает вовсе.
+    """Минус-тема без английского написания по английским статьям не работает.
 
     Плюс-тема хотя бы участвует в поиске по смыслу; минус существует только
-    ради буквальной сверки, и без совпадения он не делает ничего.
+    ради буквальной сверки. Перевод добавляется при сохранении, поэтому это
+    предупреждение — «пересохраните», — а не приговор.
     """
 
     notes = review(
@@ -122,7 +125,7 @@ def test_russian_only_minus_interest_is_an_error_not_a_warning() -> None:
         )
     )
 
-    assert [note.level for note in notes] == ["error"]
+    assert [note.level for note in notes] == ["warning"]
 
 
 def test_bilingual_interest_passes_without_notes() -> None:

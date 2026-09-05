@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from geonexa_proxima.collectors.base import (
@@ -10,6 +11,7 @@ from geonexa_proxima.collectors.base import (
     as_dict,
     as_list,
     combined_query,
+    gather_queries,
     parse_date,
 )
 from geonexa_proxima.domain import Author, CollectedItem, SourceName
@@ -22,6 +24,7 @@ class OpenAlexCollector(AsyncHTTPProvider):
         taxonomy: TaxonomyInput = None,
         *,
         email: str | None = None,
+        queries: Sequence[str] | None = None,
         **kwargs: object,
     ) -> None:
         contact = f"mailto:{email}" if email else "https://github.com/geonexa-proxima"
@@ -29,6 +32,8 @@ class OpenAlexCollector(AsyncHTTPProvider):
         super().__init__(**kwargs)
         self.query = combined_query(query, taxonomy) or "geotechnical geospatial"
         self.email = email
+        # Список запросов профиля — по одному на обращение, см. Crossref.
+        self.queries = [item for item in (queries or ()) if item.strip()]
 
     #: Сколько записей OpenAlex отдаёт за один запрос. Постраничного обхода
     #: нет, поэтому это же число — реальный потолок выдачи за окно.
@@ -42,8 +47,18 @@ class OpenAlexCollector(AsyncHTTPProvider):
             # Обе границы у OpenAlex включающие, а окно суток — полуинтервал:
             # день `until` принадлежит следующему прогону.
             window += f",to_publication_date:{(until.date() - timedelta(days=1)).isoformat()}"
+        if not self.queries:
+            return await self._search(self.query, window, limit)
+        return await gather_queries(
+            self.queries,
+            lambda query: self._search(query, window, limit),
+            limit=limit,
+            key=lambda item: item.external_id,
+        )
+
+    async def _search(self, query: str, window: str, limit: int) -> list[CollectedItem]:
         params: dict[str, object] = {
-            "search": self.query,
+            "search": query,
             "filter": window,
             "per-page": min(limit, 200),
             "sort": "publication_date:desc",
@@ -88,6 +103,7 @@ class OpenAlexCollector(AsyncHTTPProvider):
             publication_date=parse_date(work.get("publication_date")),
             venue=str(source.get("display_name")) if source.get("display_name") else None,
             citation_count=_as_int(work.get("cited_by_count")),
+            language=str(work.get("language")) if work.get("language") else None,
             url=primary_location.get("landing_page_url") or ids.get("openalex") or None,
             code_url=(
                 open_access.get("oa_url") if _looks_like_code(open_access.get("oa_url")) else None

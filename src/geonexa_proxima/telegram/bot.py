@@ -555,6 +555,8 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             "соотношения грунтов.\n"
             "Разжижение грунтов при циклических нагрузках.\n"
             "ИИ для обработки данных полевых и лабораторных опытов.</code>\n\n"
+            "Пишите по-русски: английскую сторону профиля система переведёт "
+            "сама, и поиск пойдёт по обоим языкам.\n\n"
             "Подробнее: /howto"
         )
 
@@ -607,10 +609,11 @@ def create_telegram_app(container: Container) -> TelegramApplication:
                 lines.append("Явных интересов нет — работает только текстовое описание профиля.")
             lines.append(
                 "\n<b>Добавить</b>\n"
-                "<code>/interests add + 8 liquefaction; разжижение грунтов</code>\n"
-                "Два написания через «;» — не прихоть: тема сверяется с текстом "
-                "статей буквально, а он английский. Русский вариант нужен, чтобы "
-                "список читался; английский — чтобы совпадение вообще случилось.\n\n"
+                "<code>/interests add + 8 разжижение грунтов</code>\n"
+                "Пишите по-русски: английское написание система добавит сама "
+                "через «;» — тема сверяется с текстом статей буквально, и "
+                "совпадение случается на обоих языках. Свой английский вариант "
+                "можно указать через «;», тогда он останется как есть.\n\n"
                 "<b>Убрать</b>\n<code>/interests remove UUID</code>\n\n"
                 "Вес 0-10 сравнивает темы между собой: десятка у всех означает "
                 "то же, что пятёрка у всех. Подробнее: /howto"
@@ -645,11 +648,10 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             return
         await message.answer(
             "Как пользоваться:\n"
-            "<code>/interests add + 8 liquefaction; разжижение грунтов</code>\n"
-            "<code>/interests add - 5 asphalt crack detection; трещины в асфальте</code>\n"
+            "<code>/interests add + 8 разжижение грунтов</code>\n"
+            "<code>/interests add - 5 трещины в асфальте</code>\n"
             "<code>/interests remove UUID</code>\n\n"
-            "Минус-тема без английского написания не сработает вовсе: сверка "
-            "идёт по английскому тексту статей. Подробнее: /howto"
+            "Английское написание добавляется автоматически. Подробнее: /howto"
         )
 
     @router.message(Command("profile", "personalization"))
@@ -675,6 +677,12 @@ def create_telegram_app(container: Container) -> TelegramApplication:
             f"Плановый дайджест: {'включён' if profile.digest_enabled else 'выключен'}",
             f"Описание: {escape(description)}",
         ]
+        if profile.description_en and profile.description_en != profile.description:
+            lines.append(f"По-английски (перевод для поиска): {escape(profile.description_en)}")
+        elif profile.description and not profile.description_en:
+            lines.append(
+                "По-английски: перевода пока нет — он появится при следующем сохранении описания."
+            )
         # Разбиение на темы механическое и из текста описания не видно: одно и
         # то же предложение может стать одной темой или двумя. Показываем
         # результат — так правило не нужно заучивать.

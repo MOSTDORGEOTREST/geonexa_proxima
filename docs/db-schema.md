@@ -3,7 +3,14 @@
 PostgreSQL 16. Всё на UUID PK, `timestamptz`, JSONB для гибких полей.
 Миграции: `0003_platform_v2.py` (платформа), `0004_metrics.py` (метрики),
 `0005_pgvector.py` (векторы), `0006_profile_facets.py` (грани профиля),
-`0007_facet_text_hash.py` (отпечаток текста грани).
+`0007_facet_text_hash.py` (отпечаток текста грани), `0008_daily_harvest.py`
+(верхняя граница окна прогона и расписания), `0009_russian_sources_bilingual_profiles.py`
+(источники `cyberleninka` и `oai` в CHECK-ограничениях `source`; у
+`subscriber_profiles` — `description_en` и `translation_source_hash`).
+
+Служебные поля в `harvest_runs.stats` (JSONB): `heartbeat_at`, `days_done`,
+`days_planned` — отметка живого прогона после каждых суток; по ней
+`reclaim_stale_runs` отличает долгий сбор от брошенного.
 
 Основная БД — управляемый PostgreSQL 16 в Timeweb Cloud, TLS `verify-full`.
 `sslmode` в DSN не передаётся: asyncpg его не понимает, режим задаётся

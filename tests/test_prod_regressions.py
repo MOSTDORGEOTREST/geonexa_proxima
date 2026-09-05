@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import yaml
 
-from geonexa_proxima.collectors.github import QUERY_LIMIT, GitHubCollector
+from geonexa_proxima.collectors.factory import source_queries
+from geonexa_proxima.collectors.github import QUERY_LIMIT, GitHubCollector, simple_queries
 from geonexa_proxima.db.models import DIGEST_STATUS_VALUES
 from geonexa_proxima.workflows.delivery import is_permanent
 
@@ -41,11 +43,34 @@ def test_github_query_fits_the_search_limit() -> None:
     collector = GitHubCollector(taxonomy=taxonomy.get("discovery_queries"))
     window_start = datetime(2026, 8, 30, tzinfo=UTC)
 
-    query = collector._search_query(window_start, datetime(2026, 8, 31, tzinfo=UTC))
+    queries = collector._search_queries(window_start, datetime(2026, 8, 31, tzinfo=UTC))
 
-    assert len(query) <= QUERY_LIMIT
-    # Условия не выброшены целиком — иначе запрос перестал бы искать по делу.
-    assert query.count(" OR ") >= 2
+    assert queries
+    for query in queries:
+        assert len(query) <= QUERY_LIMIT
+        assert "pushed:2026-08-30..2026-08-30" in query
+
+
+def test_github_queries_carry_no_boolean_syntax() -> None:
+    """Вторая регрессия: и укороченный запрос отвергался с 422.
+
+    Поиск репозиториев GitHub не понимает скобок и допускает не больше пяти
+    операторов AND/OR/NOT. Булево выражение профиля уходит теперь простыми
+    конъюнкциями фраз — по одной на запрос.
+    """
+
+    taxonomy = yaml.safe_load(open("config/taxonomy.yaml", encoding="utf-8"))
+    collector = GitHubCollector(taxonomy=taxonomy.get("discovery_queries"))
+
+    for query in collector._search_queries(datetime(2026, 8, 30, tzinfo=UTC), None):
+        body = query.split(" in:")[0]
+        assert "(" not in body and ")" not in body
+        assert " AND " not in body and " OR " not in body
+        assert body.count('"') % 2 == 0
+
+    assert simple_queries('("a" AND "b") OR ("c" AND "d")') == ['"a" "b"', '"c" "d"']
+    assert simple_queries("x OR y in:name,description") == ["x", "y"]
+    assert simple_queries('"a" AND NOT ("x" OR "y")') == ['"a"']
 
 
 def test_github_query_rotates_across_days() -> None:
@@ -62,6 +87,15 @@ def test_github_query_rotates_across_days() -> None:
     )
 
     assert first != second
+
+
+def test_github_reads_its_own_queries_from_the_harvest_profile() -> None:
+    """Раздел `sources.github.queries` профиля сбора наконец читается."""
+
+    queries = source_queries(Path("config/harvest.yaml"), "github")
+
+    assert queries
+    assert queries[0].startswith("geotechnical machine learning")
 
 
 def test_permanent_telegram_errors_are_not_retried() -> None:

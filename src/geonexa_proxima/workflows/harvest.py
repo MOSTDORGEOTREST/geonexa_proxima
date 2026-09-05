@@ -22,9 +22,10 @@ from geonexa_proxima.services.harvest_window import day_range, parse_day, schedu
 from geonexa_proxima.services.ingestion import IngestionStats
 
 #: Предел на ручной диапазон суток. Плановый догон ограничен своим пределом,
-#: а здесь защита от опечатки в дате: один прогон не должен превращаться в
-#: многочасовой обход источников.
-MAX_MANUAL_DAYS = 90
+#: а здесь защита от опечатки в дате (2020 вместо 2026 — это две тысячи
+#: суток), а не от долгого прогона: год по суткам — осознанный выбор
+#: администратора, и он задаётся из админки как «последние N суток».
+MAX_MANUAL_DAYS = 400
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,18 +71,52 @@ async def reclaim_stale_runs(container: Any, stale_after_minutes: int) -> int:
     """
 
     async with container.require_engine().begin() as connection:
+        # Живой прогон отмечается после каждых суток (`heartbeat`): ручной
+        # сбор за квартал идёт часами и иначе выглядел бы брошенным, а
+        # ночной плановый запуск помечал бы его неудачным и открывал второй
+        # параллельно — ровно то, от чего защищает уникальный индекс.
         result = await connection.execute(
             text(
                 "UPDATE harvest_runs SET status = 'failed', finished_at = now(), "
                 "error = coalesce(error, 'Прогон оборван: процесс не закрыл запись. "
                 "Помечен неудачным автоматически, иначе сбор был бы заблокирован.') "
                 "WHERE status = 'running' "
-                "  AND started_at < now() - make_interval(mins => :minutes) "
+                "  AND coalesce(CAST(stats ->> 'heartbeat_at' AS timestamptz), started_at)"
+                "      < now() - make_interval(mins => :minutes) "
                 "RETURNING id"
             ),
             {"minutes": stale_after_minutes},
         )
         return len(result.fetchall())
+
+
+@task(name="harvest-heartbeat", cache_policy=NO_CACHE)
+async def heartbeat(container: Any, run_id: uuid.UUID, done: int, planned: int) -> None:
+    """Отметить, что прогон жив и сколько суток уже пройдено.
+
+    Пишется в `stats` той же строки: отдельная колонка потребовала бы
+    миграции ради одного поля, а экран прогонов и так читает `stats`.
+    """
+
+    import json
+
+    async with container.require_engine().begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE harvest_runs SET stats = coalesce(stats, '{}'::jsonb)"
+                " || CAST(:progress AS jsonb) WHERE id = :id"
+            ),
+            {
+                "id": str(run_id),
+                "progress": json.dumps(
+                    {
+                        "heartbeat_at": datetime.now(UTC).isoformat(),
+                        "days_done": done,
+                        "days_planned": planned,
+                    }
+                ),
+            },
+        )
 
 
 @task(name="last-covered-until", cache_policy=NO_CACHE)
@@ -311,6 +346,10 @@ async def global_harvest_flow(
                     "failures": sorted(stats.failures),
                 }
             )
+            try:
+                await heartbeat(container, run_id, index, len(chunks))
+            except Exception as error:  # отметка о жизни не важнее самого сбора
+                logger.warning("Отметка прогона не записана: %s: %s", type(error).__name__, error)
 
         # Журнал решений и счётчики терминов копятся пачками: без сброса
         # последняя пачка не доехала бы до базы.
@@ -360,23 +399,9 @@ async def _plan(
             "Верхней границы нет, лимит выдачи источника может срезать хвост.",
         )
 
-    if days_back:
-        # «Последние N суток» — то же самое, что диапазон, только даты
-        # считаются в момент запуска. Кнопка в админке статична и сегодняшнего
-        # числа не знает.
-        yesterday = (datetime.now(UTC) - timedelta(days=1)).date()
-        first = yesterday - timedelta(days=max(1, int(days_back)) - 1)
-        windows = day_range(first, yesterday)
-        if len(windows) > MAX_MANUAL_DAYS:
-            raise ValueError(
-                f"Запрошено {_days_word(len(windows))} — больше предела {MAX_MANUAL_DAYS} "
-                "за один прогон. Разбейте на части."
-            )
-        return (
-            [_chunk(window) for window in windows],
-            f"Последние {_days_word(len(windows))}: {windows[0].label} — {windows[-1].label}.",
-        )
-
+    # Явные даты сильнее «последних N суток»: форма запуска в админке
+    # подставляет параметры расписания, и человек, вписавший диапазон, не
+    # должен ещё и вспоминать, что надо очистить days_back.
     first = parse_day(day or since_day)
     last = parse_day(until_day or day)
     if first is not None or last is not None:
@@ -398,6 +423,23 @@ async def _plan(
             [_chunk(window) for window in windows],
             f"Заданные сутки: {windows[0].label} — {windows[-1].label}, "
             f"всего {_days_word(len(windows))}.",
+        )
+
+    if days_back:
+        # «Последние N суток» — то же самое, что диапазон, только даты
+        # считаются в момент запуска. Кнопка в админке статична и сегодняшнего
+        # числа не знает.
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).date()
+        first = yesterday - timedelta(days=max(1, int(days_back)) - 1)
+        windows = day_range(first, yesterday)
+        if len(windows) > MAX_MANUAL_DAYS:
+            raise ValueError(
+                f"Запрошено {_days_word(len(windows))} — больше предела {MAX_MANUAL_DAYS} "
+                "за один прогон. Разбейте на части."
+            )
+        return (
+            [_chunk(window) for window in windows],
+            f"Последние {_days_word(len(windows))}: {windows[0].label} — {windows[-1].label}.",
         )
 
     covered = await last_covered_until(container)

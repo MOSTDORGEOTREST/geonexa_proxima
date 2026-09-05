@@ -26,12 +26,15 @@ RELEVANT = [
         "Graph neural network surrogate for discrete element method simulations",
         "Learned simulator for granular material flow; code is available.",
     ),
+    # Мягкий гейт: геотехнический якорь без ML тоже проходит — источники и так
+    # опрашиваются профильными запросами, а отсеивать по строгому правилу
+    # значило терять большинство собранного (332 из 385 за месяц).
+    ("Slope stability analysis using limit equilibrium methods", "No learning component."),
 ]
 IRRELEVANT = [
     ("Deep learning for protein folding prediction", "AlphaFold-style model."),
     ("Soil microbiome diversity under fertilizer regimes", "Crop yield study."),
     ("Transformer architectures for sentiment analysis of reviews", ""),
-    ("Slope stability analysis using limit equilibrium methods", "No learning component."),
     ("A bibliometric review of machine learning in geotechnical engineering", "Trends."),
 ]
 

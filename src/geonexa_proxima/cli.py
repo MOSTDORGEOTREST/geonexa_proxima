@@ -259,6 +259,25 @@ def db_seed() -> None:
     typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
 
 
+@db_app.command("sync-harvest")
+def db_sync_harvest() -> None:
+    """Перечитать config/harvest.yaml в базу: правило, группы, термины."""
+
+    async def execute() -> dict[str, object]:
+        from geonexa_proxima.bootstrap.seed import sync_harvest_profile
+        from geonexa_proxima.config import get_settings
+        from geonexa_proxima.db.session import dispose_engines, get_engine
+
+        settings = get_settings()
+        engine = get_engine(settings, application_name="geonexa-seed")
+        try:
+            return dict(await sync_harvest_profile(engine, settings))
+        finally:
+            await dispose_engines()
+
+    typer.echo(json.dumps(asyncio.run(execute()), ensure_ascii=False, indent=2))
+
+
 @prefect_app.command("deploy")
 def prefect_deploy() -> None:
     """Зарегистрировать флоу с расписаниями из базы."""

@@ -117,6 +117,34 @@ async def profile(admin: Admin, db: Engine, settings: AppSettings) -> dict[str, 
     return {"profile": row, "groups": groups}
 
 
+@router.post("/profile/resync")
+async def resync_profile(
+    admin: Admin, db: Engine, settings: AppSettings, request: Request
+) -> dict[str, Any]:
+    """Перечитать `config/harvest.yaml` в базу и сбросить кэш матчера.
+
+    Матчер собирается из файла, а экран профиля читает базу: после правки
+    файла они расходятся, и по экрану нельзя понять, что реально режет
+    гейт. Кнопка приводит базу к файлу; правки терминов, сделанные в
+    админке поверх файла, при этом теряются — файл здесь источник истины.
+    """
+
+    from geonexa_proxima.bootstrap.seed import sync_harvest_profile
+
+    if not settings.harvest_config_path.is_file():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Профиль сбора не найден: {settings.harvest_config_path}",
+        )
+    try:
+        report = await sync_harvest_profile(db, settings)
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    request.app.state.harvest_matcher = None
+    await audit(db, admin, request, action="harvest.profile.resync", payload=report)
+    return report
+
+
 @router.get("/terms")
 async def terms(
     admin: Admin,

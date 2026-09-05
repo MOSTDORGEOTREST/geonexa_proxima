@@ -155,6 +155,24 @@
 				placeholder={'Математическое моделирование в геотехнике: МКЭ и определяющие соотношения грунтов.\nРазжижение грунтов при циклических нагрузках.\nИИ для обработки данных полевых и лабораторных опытов.'}
 				>{profile.description ?? ''}</textarea
 			>
+			<!-- Английская сторона профиля: её делает LLM при сохранении, и по
+			     ней идёт поиск в англоязычном корпусе. Показываем, а не даём
+			     править: правка русского описания перезапишет перевод. -->
+			<div class="english">
+				<span class="label-row">
+					<span class="muted small caps">Английская сторона</span>
+					<span class="hint">— перевод для поиска, обновляется при сохранении</span>
+				</span>
+				{#if profile.description_en}
+					<p class="dim small en">{profile.description_en}</p>
+				{:else if profile.description}
+					<p class="muted small">
+						Перевода пока нет — модель была недоступна при сохранении. Сохраните описание ещё раз.
+					</p>
+				{:else}
+					<p class="muted small">Появится вместе с описанием.</p>
+				{/if}
+			</div>
 
 			<div class="split">
 				<div>
@@ -168,6 +186,7 @@
 								<li>
 									{facet.text}
 									{#if facet.source === 'interest'}<span class="muted">· из тем</span>{/if}
+									{#if facet.source === 'description_en'}<span class="muted">· перевод</span>{/if}
 								</li>
 							{/each}
 						</ol>
@@ -335,6 +354,24 @@
 {/if}
 
 <style>
+	.english {
+		display: grid;
+		gap: 4px;
+		margin: 6px 0 10px;
+	}
+
+	.caps {
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.en {
+		margin: 0;
+		white-space: pre-line;
+		line-height: 1.5;
+		max-width: 90ch;
+	}
+
 	.note {
 		max-width: 78ch;
 		font-size: 13px;

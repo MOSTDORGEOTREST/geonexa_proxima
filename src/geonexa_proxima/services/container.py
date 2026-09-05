@@ -61,6 +61,9 @@ class Container:
     analyzer: Analyzer | None = None
     personalizer: ProfileExplainer | None = None
     deep_personalizer: ProfileExplainer | None = None
+    #: Переводчик профилей на английский (light-модель). Необязателен: без
+    #: него профили остаются одноязычными.
+    translator: Any | None = None
     profile_text: str = ""
     resources: Sequence[object] = field(default_factory=tuple, repr=False)
     _bot: Any | None = field(default=None, repr=False, compare=False)
@@ -176,6 +179,7 @@ class Container:
             cursors=self.source_cursors(),
             term_counter=counter,
             logger=logger,
+            ranking_concurrency=self.settings.light_llm_concurrency,
         )
 
     def source_cursors(self) -> Any | None:
@@ -225,7 +229,9 @@ class Container:
     def profile_service(self) -> UserProfileService:
         if self.profile_repository is None:
             raise RuntimeError("Репозиторий профилей не сконфигурирован")
-        return UserProfileService(self.profile_repository, self.profile_text)
+        return UserProfileService(
+            self.profile_repository, self.profile_text, translator=self.translator
+        )
 
     def personalization_service(self) -> PersonalizationService:
         if not all(
@@ -336,6 +342,7 @@ def load_container(
             components["analyzer"] = llm_bundle.analyzer
             components["personalizer"] = llm_bundle.personalizer
             components["deep_personalizer"] = llm_bundle.deep_personalizer
+            components["translator"] = getattr(llm_bundle, "translator", None)
             components["resources"] = [llm_bundle]
         for name, (module_name, factory_name) in _FACTORIES.items():
             if name in components:
@@ -389,6 +396,7 @@ def _coerce_container(value: object, settings: Settings) -> Container:
         "analyzer",
         "personalizer",
         "deep_personalizer",
+        "translator",
         "resources",
     }
     unknown = set(components) - allowed

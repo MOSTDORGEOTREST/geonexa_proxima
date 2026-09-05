@@ -52,12 +52,14 @@ service-account*.json
 
 # Runtime data and logs
 *.log
-logs/
-data/
-artifacts/
-outputs/
-output/
-runs/
+/logs/
+/data/
+/artifacts/
+/outputs/
+/output/
+# Только корневые каталоги данных: без ведущего слеша правило `runs/` глушило
+# страницу админки admin-ui/src/routes/(app)/runs/ — она не попадала в git.
+/runs/
 tmp/
 .tmp/
 *.tmp
@@ -142,3 +144,6 @@ prefect.db
 
 # Отложено на удаление: старые версии файлов, архивы переноса
 _to_delete/
+
+# Исходники админки не бывают «данными»: ни одно правило выше не должно их прятать
+!admin-ui/src/**

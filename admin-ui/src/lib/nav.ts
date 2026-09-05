@@ -46,7 +46,12 @@ export const SECTIONS: NavSection[] = [
 	{
 		id: 'harvest',
 		label: 'Сбор',
-		items: [{ href: '/harvest', label: 'Сбор' }]
+		// Сбор — что ищем; публикации — что нашли. Вопрос «а что вообще
+		// попало в корпус» раньше не имел экрана: только воронка в числах.
+		items: [
+			{ href: '/harvest', label: 'Сбор' },
+			{ href: '/publications', label: 'Публикации' }
+		]
 	},
 	{
 		id: 'ops',

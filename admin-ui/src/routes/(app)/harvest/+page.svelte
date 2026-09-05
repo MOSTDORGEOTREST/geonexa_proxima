@@ -46,7 +46,7 @@
 			<input
 				type="hidden"
 				name="parameters"
-				value={JSON.stringify({ days_back: 30, limit_per_source: 200 })}
+				value={JSON.stringify({ days_back: 30, limit_per_source: 1000 })}
 			/>
 			<button type="submit" disabled={!canRun}>Собрать за 30 дней</button>
 		</form>
@@ -70,6 +70,10 @@
 				<strong>Сейчас идёт прогон</strong>
 				<span class="muted small">
 					начат {when(data.activeRun.started_at)} ({data.activeRun.trigger})
+					{#if data.activeRun.stats?.days_planned}
+						· пройдено {data.activeRun.stats.days_done ?? 0} из {data.activeRun.stats.days_planned} суток,
+						отметка {when(data.activeRun.stats.heartbeat_at)}
+					{/if}
 				</span>
 				<p class="muted small">
 					Второй сбор параллельно не запустится. Если прогон завис — процесс упал, не
@@ -134,8 +138,21 @@
 	</section>
 
 	<section class="panel">
-		<header><h2>Профиль</h2></header>
+		<header>
+			<h2>Профиль</h2>
+			<form method="POST" action="?/resync" use:once>
+				<button type="submit" title="Перечитать config/harvest.yaml: правило, группы, термины">
+					Обновить из файла
+				</button>
+			</form>
+		</header>
 		<div class="body">
+			{#if form?.resynced}
+				<p class="flash ok" role="status">
+					Профиль перечитан: групп {form.resynced.groups_upserted}, терминов {form.resynced.terms_upserted},
+					удалено терминов {form.resynced.terms_removed}.
+				</p>
+			{/if}
 			{#if data.profile?.profile}
 				<p class="mono small">{data.profile.profile.satisfy_expr}</p>
 				<div class="table-scroll">

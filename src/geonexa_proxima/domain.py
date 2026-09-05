@@ -41,6 +41,10 @@ class SourceName(StrEnum):
     SEMANTIC_SCHOLAR = "semantic_scholar"
     GITHUB = "github"
     HUGGINGFACE = "huggingface"
+    #: Российская открытая библиотека — по протоколу OAI-PMH.
+    CYBERLENINKA = "cyberleninka"
+    #: Любой архив или журнал на OJS/Elpub по OAI-PMH; конкретный адрес — в конфиге.
+    OAI = "oai"
 
 
 class FeedbackKind(StrEnum):
@@ -161,6 +165,12 @@ class UserProfile(BaseModel):
     name: str
     normalized_name: str
     description: str | None = None
+    #: Английская сторона профиля — перевод описания, сделанный LLM. По ней
+    #: ищут в англоязычном корпусе; человек пишет только по-русски.
+    description_en: str | None = None
+    #: Отпечаток описания, к которому относится перевод. Не совпал с
+    #: текущим — перевод отстал, и его пересчитают при следующей сборке.
+    translation_source_hash: str | None = None
     compiled_text: str
     version: int = Field(ge=1)
     is_active: bool
@@ -266,6 +276,10 @@ class CollectedItem(BaseModel):
     url: HttpUrl | None = None
     code_url: HttpUrl | None = None
     dataset_url: HttpUrl | None = None
+    #: Язык материала (ISO-код), если источник его сообщил. Не вычисляется:
+    #: угадывание по тексту при двуязычных заголовках врало бы в половине
+    #: случаев, а «неизвестно» честнее, чем «ru» у английской статьи.
+    language: str | None = None
     raw: dict[str, object] = Field(default_factory=dict)
 
     @computed_field

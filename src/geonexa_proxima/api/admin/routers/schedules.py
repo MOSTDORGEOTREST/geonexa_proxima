@@ -19,7 +19,7 @@ from geonexa_proxima.api.admin.deps import (
     fetch_one,
     require,
 )
-from geonexa_proxima.flow_catalog import BY_KEY, FLOWS
+from geonexa_proxima.flow_catalog import BY_KEY, FLOWS, coerce_parameters, describe_fields
 from geonexa_proxima.services.prefect_admin import (
     PrefectAdmin,
     PrefectUnavailable,
@@ -45,6 +45,9 @@ class ScheduleUpdate(BaseModel):
 
 class RunRequest(BaseModel):
     parameters: dict[str, Any] | None = None
+    #: Дописать переданное поверх параметров расписания (по умолчанию) или
+    #: запустить ровно с тем, что передано.
+    merge: bool = True
 
 
 class CronCheck(BaseModel):
@@ -86,6 +89,10 @@ async def list_schedules(
         spec = BY_KEY.get(row["key"])
         row["description"] = spec.description if spec else None
         row["entrypoint"] = spec.entrypoint if spec else None
+        # Описание полей едет вместе со строкой: форма параметров в админке
+        # строится из него, а не из JSON, который надо подсматривать в коде.
+        row["fields"] = describe_fields(spec) if spec else []
+        row["default_parameters"] = dict(spec.parameters or {}) if spec else {}
         row["schedule"] = (
             describe_cron(row["cron"], timezone=row.get("timezone") or "Europe/Moscow")
             if row.get("cron")
@@ -106,6 +113,7 @@ async def catalog(admin: Admin) -> list[dict[str, Any]]:
             "description": spec.description,
             "schedule_kind": spec.schedule_kind,
             "parameters": spec.parameters or {},
+            "fields": describe_fields(spec),
         }
         for spec in FLOWS
     ]
@@ -142,12 +150,35 @@ async def patch_schedule(
     if payload.cron and not describe_cron(payload.cron).get("valid"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Cron-выражение не разбирается")
 
+    if payload.parameters is not None:
+        import json
+
+        try:
+            parameters = coerce_parameters(row["key"], payload.parameters)
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+        # Параметры пишутся ДО push в Prefect: `_push_schedule` читает их из
+        # той же строки, и в прежнем порядке деплоймент получал старые
+        # параметры, а новые доезжали только со следующей правкой расписания.
+        await execute(
+            db,
+            text(
+                "UPDATE schedules SET parameters = CAST(:parameters AS jsonb),"
+                " sync_pending = true, updated_at = now() WHERE id = :id"
+            ),
+            {
+                "parameters": json.dumps(parameters, ensure_ascii=False),
+                "id": str(schedule_id),
+            },
+        )
+
     client = _prefect(request, settings, db)
     try:
         result = await client.set_schedule(
             row["key"],
             cron=payload.cron or (None if payload.interval_seconds else row["cron"]),
-            interval_seconds=payload.interval_seconds,
+            interval_seconds=payload.interval_seconds
+            or (None if payload.cron else row["interval_seconds"]),
             timezone=payload.timezone or row["timezone"],
             enabled=row["enabled"] if payload.enabled is None else payload.enabled,
             actor=admin.username,
@@ -155,20 +186,6 @@ async def patch_schedule(
     except ValueError as error:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
-    if payload.parameters is not None:
-        import json
-
-        await execute(
-            db,
-            text(
-                "UPDATE schedules SET parameters = CAST(:parameters AS jsonb),"
-                " updated_at = now() WHERE id = :id"
-            ),
-            {
-                "parameters": json.dumps(payload.parameters, ensure_ascii=False),
-                "id": str(schedule_id),
-            },
-        )
     await audit(
         db,
         admin,
@@ -230,10 +247,19 @@ async def run_now(
         "Расписание",
     )
     client = _prefect(request, settings, db)
+    parameters: dict[str, Any] | None = row.get("parameters") or None
+    if payload.parameters is not None:
+        try:
+            given = coerce_parameters(row["key"], payload.parameters)
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+        # Параметры кнопки дополняют параметры расписания, а не заменяют их:
+        # «собрать за 90 дней» не должно сбрасывать лимит на источник.
+        parameters = {**(row.get("parameters") or {}), **given} if payload.merge else given
     try:
         result = await client.run_now(
             row["key"],
-            parameters=payload.parameters or row.get("parameters") or None,
+            parameters=parameters or None,
             actor=admin.username,
         )
     except PrefectUnavailable as error:
@@ -245,7 +271,7 @@ async def run_now(
         action="schedule.run",
         entity_type="schedule",
         entity_id=str(schedule_id),
-        payload={"key": row["key"]},
+        payload={"key": row["key"], "parameters": parameters or {}},
     )
     return result
 

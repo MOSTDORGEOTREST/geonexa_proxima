@@ -45,7 +45,10 @@ DEFAULT_EMBEDDING_DIMENSIONS = 1024
 DEFAULT_VECTOR_COLUMN_TYPE = "vector"
 
 ITEM_KINDS = "'paper', 'method', 'software', 'dataset'"
-SOURCE_NAMES = "'arxiv', 'openalex', 'crossref', 'semantic_scholar', 'github', 'huggingface'"
+SOURCE_NAMES = (
+    "'arxiv', 'openalex', 'crossref', 'semantic_scholar', 'github', 'huggingface', "
+    "'cyberleninka', 'oai'"
+)
 FEEDBACK_KINDS = "'very_interesting', 'useful', 'not_interesting', 'save', 'deeper'"
 SUBSCRIBER_KINDS = sql_literals(ALL_KINDS)
 SUBSCRIBER_STATUSES = "'pending', 'active', 'paused', 'blocked', 'left'"
@@ -407,6 +410,8 @@ class SubscriberProfileModel(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    description_en: Mapped[str | None] = mapped_column(Text)
+    translation_source_hash: Mapped[str | None] = mapped_column(String(32))
     compiled_text: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )

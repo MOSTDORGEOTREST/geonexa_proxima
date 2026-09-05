@@ -52,7 +52,14 @@ export const STAGES: FlowStage[] = [
 				// Именно `days_back`, а не `lookback_hours`: второе включает
 				// запасной режим одного открытого окна, который упирается в
 				// лимит выдачи источника и молча теряет хвост.
-				parameters: { days_back: 30, limit_per_source: 200 }
+				parameters: { days_back: 30, limit_per_source: 1000 }
+			},
+			{
+				id: 'harvest-quarter',
+				key: 'global-harvest',
+				label: 'Собрать за 90 дней',
+				hint: 'Квартал по суткам — часы работы и заметный расход токенов. Другой период задаётся в «Настроить» у расписания сбора',
+				parameters: { days_back: 90, limit_per_source: 1000 }
 			}
 		]
 	},

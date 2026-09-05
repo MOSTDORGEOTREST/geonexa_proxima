@@ -225,7 +225,8 @@ async def get_subscriber(subscriber_id: UUID, admin: Admin, db: Engine) -> dict[
             # description обязателен: редактор профиля в админке заполняет
             # поле из этого ответа и сохраняет его обратно. Без колонки поле
             # приходило пустым, и первое же сохранение стирало описание.
-            "SELECT id, name, description, is_active, digest_enabled, delivery_format,"
+            "SELECT id, name, description, description_en, translation_source_hash,"
+            " is_active, digest_enabled, delivery_format,"
             " max_items, min_personal_score, last_digest_at, next_digest_at, version"
             " FROM subscriber_profiles WHERE subscriber_id = :id"
             " ORDER BY is_active DESC, created_at"

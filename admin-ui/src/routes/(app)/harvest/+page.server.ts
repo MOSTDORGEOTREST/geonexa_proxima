@@ -91,6 +91,19 @@ export const actions: Actions = {
 			return fail(503, { error: (error as Error).message });
 		}
 	},
+	/** Перечитать config/harvest.yaml в базу: экран профиля и гейт снова про одно. */
+	resync: async ({ locals, fetch }) => {
+		try {
+			const result = await api<any>('/api/admin/harvest/profile/resync', {
+				method: 'POST',
+				token: locals.token,
+				fetchImpl: fetch
+			});
+			return { resynced: result };
+		} catch (error) {
+			return fail(400, { error: (error as Error).message });
+		}
+	},
 	probe: async ({ request, locals, fetch }) => {
 		const form = await request.formData();
 		const title = String(form.get('title') ?? '').trim();

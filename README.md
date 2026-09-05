@@ -14,9 +14,18 @@
 
 ## Что уже работает
 
-- **Профиль сбора** — 323 термина в семи группах (RU + EN), булево выражение
-  допуска, детерминированный keyword-гейт до эмбеддингов: нерелевантное не
-  доходит ни до модели, ни до LLM, ни до базы.
+- **Профиль сбора** — более 600 терминов в десяти группах (RU + EN, русская
+  морфология основами и регулярками), булево выражение допуска и
+  детерминированный keyword-гейт до эмбеддингов. Гейт широкий: геотехника,
+  инженерная геология, строительство, мониторинг; чистая геология режется
+  только без инженерного якоря.
+- **Шесть источников**: arXiv, OpenAlex, Crossref (в том числе журналы целиком
+  по ISSN), GitHub, КиберЛенинка по OAI-PMH и любой журнал на OJS по тому же
+  протоколу. Запросы к каждому — в его синтаксисе, по одному, на русском и
+  английском (`config/harvest.yaml`, раздел `sources`).
+- **Двуязычный профиль интересов**: человек пишет по-русски, английскую
+  сторону при каждом сохранении делает LLM с терминологией отрасли, и поиск
+  идёт по обеим.
 - **Общий корпус** в PostgreSQL 16: нормализация, дедупликация, провенанс всех
   источников, векторы в pgvector рядом с метаданными — одна база, одна транзакция.
 - **Групп-центричная схема**: субъект — не тот, кто пишет, а чат, в котором
@@ -884,7 +893,8 @@ curl -s localhost:8000/api/admin/dashboard/summary -H "Authorization: Bearer $TO
 | Как писать профиль | `/profiles/guide`, `POST /profiles/preview`, `/profiles/{profile_id}/preview` | инструкция (тот же текст, что `/howto` в боте), разбор описания на темы и замечания |
 | Чаты | `/chats`, `/chats/{subscriber_id}` и его `/refresh`, `/leave`, `/test-message`, `/events` | где стоит бот, какие у него права, живая сверка с Telegram |
 | Подписки | `/plans`, `/subscriptions`, `/subscriptions/expiring`, `/subscriptions/{subscription_id}` и его `/extend`, `/cancel`, плюс `/subscriptions/expire-due` | тарифы и сроки действия |
-| Сбор | `/harvest/test`, `/harvest/profile`, `/harvest/terms`, `/harvest/terms/stats`, `/harvest/runs`, `/harvest/decisions`, `/harvest/blocked-reasons`, `/harvest/cursors`, `/harvest/runs/abort` | что ищем, что отсекли и почему, где остановился каждый источник |
+| Сбор | `/harvest/test`, `/harvest/profile`, `/harvest/terms`, `/harvest/terms/stats`, `/harvest/runs`, `/harvest/decisions`, `/harvest/blocked-reasons`, `/harvest/cursors`, `/harvest/runs/abort`, `POST /harvest/profile/resync` | что ищем, что отсекли и почему, где остановился каждый источник |
+| Публикации | `/items`, `/items/facets`, `/items/{item_id}` | корпус списком: поиск, фильтры по источнику, виду, дате и оценке, карточка с разбором |
 | Расписания | `/schedules`, `/schedules/flows`, `/schedules/validate`, `/schedules/{schedule_id}` и его `/run`, `/toggle` | когда что запускается и запуск вручную |
 | Prefect | `/prefect/health`, `/prefect/deployments`, `/prefect/flow-runs` (фильтры `kind`, `state`, `include_scheduled`), `/prefect/flow-runs/{flow_run_id}/logs` и `/cancel`, `/prefect/resync` | прогоны и логи, не выходя из админки |
 | Доставки | `/deliveries/queue`, `/deliveries/jobs`, `/deliveries/jobs/{job_id}` и его `/retry`, `/cancel`, плюс `/deliveries/messages`, `/deliveries/stats`, `/deliveries/digests` | очередь, ретраи, `telegram_message_id` каждого сообщения |

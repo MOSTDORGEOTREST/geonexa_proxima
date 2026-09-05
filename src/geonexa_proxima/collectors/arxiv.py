@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from xml.etree import ElementTree
 
@@ -10,6 +11,7 @@ from geonexa_proxima.collectors.base import (
     AsyncHTTPProvider,
     TaxonomyInput,
     combined_query,
+    gather_queries,
     in_window,
     parse_date,
 )
@@ -24,11 +26,15 @@ class ArxivCollector(AsyncHTTPProvider):
         self,
         query: str | None = None,
         taxonomy: TaxonomyInput = None,
+        queries: Sequence[str] | None = None,
         **kwargs: object,
     ) -> None:
         kwargs.setdefault("user_agent", "GeoNexa-Proxima/0.1 (arXiv research collector)")
         super().__init__(**kwargs)
         self.query = combined_query(query, taxonomy) or "geotechnical OR geospatial"
+        # Готовые запросы профиля в синтаксисе arXiv (`abs:"..."`), по одному
+        # на обращение. arXiv просит паузу в три секунды между запросами.
+        self.queries = [item for item in (queries or ()) if item.strip()]
 
     #: Потолок выдачи arXiv за один запрос.
     page_limit = 2000
@@ -36,11 +42,24 @@ class ArxivCollector(AsyncHTTPProvider):
     async def collect(
         self, since: datetime, limit: int, until: datetime | None = None
     ) -> list[CollectedItem]:
+        if not self.queries:
+            return await self._fetch(self._search_query(since, until), since, until, limit)
+        return await gather_queries(
+            [self._with_window(query, since, until) for query in self.queries],
+            lambda query: self._fetch(query, since, until, limit),
+            limit=limit,
+            key=lambda item: item.external_id,
+            pause=3.0,
+        )
+
+    async def _fetch(
+        self, search_query: str, since: datetime, until: datetime | None, limit: int
+    ) -> list[CollectedItem]:
         response = await self._request(
             "GET",
             "https://export.arxiv.org/api/query",
             params={
-                "search_query": self._search_query(since, until),
+                "search_query": search_query,
                 "start": 0,
                 "max_results": limit,
                 "sortBy": "submittedDate",
@@ -82,6 +101,7 @@ class ArxivCollector(AsyncHTTPProvider):
                     arxiv_id=arxiv_id,
                     publication_date=published,
                     venue=(entry.findtext(f"{{{_ARXIV}}}journal_ref") or "").strip() or None,
+                    language="en",
                     url=links.get("alternate") or entry_url or None,
                     raw={"atom": ElementTree.tostring(entry, encoding="unicode")},
                 )
@@ -94,6 +114,10 @@ class ArxivCollector(AsyncHTTPProvider):
         else:
             parts = [part.strip() for part in self.query.split(" OR ") if part.strip()]
             terms = " OR ".join(f'all:"{part}"' for part in parts)
+        return self._with_window(terms, since, until)
+
+    @staticmethod
+    def _with_window(terms: str, since: datetime, until: datetime | None) -> str:
         if until is None:
             return terms
         # Окно задаётся самому arXiv, а не отбирается на нашей стороне. Выдача

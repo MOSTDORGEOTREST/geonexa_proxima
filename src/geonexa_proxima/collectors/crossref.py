@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
 from geonexa_proxima.collectors.base import (
@@ -12,6 +13,7 @@ from geonexa_proxima.collectors.base import (
     as_dict,
     as_list,
     combined_query,
+    gather_queries,
 )
 from geonexa_proxima.domain import Author, CollectedItem, SourceName
 
@@ -25,6 +27,8 @@ class CrossrefCollector(AsyncHTTPProvider):
         taxonomy: TaxonomyInput = None,
         *,
         email: str | None = None,
+        queries: Sequence[str] | None = None,
+        issns: Sequence[str] | None = None,
         **kwargs: object,
     ) -> None:
         contact = email or "unknown"
@@ -32,6 +36,14 @@ class CrossrefCollector(AsyncHTTPProvider):
         super().__init__(**kwargs)
         self.query = combined_query(query, taxonomy) or "geotechnical geospatial"
         self.email = email
+        # Свой список запросов профиля: каждый уходит отдельно, по-русски в
+        # том числе — Crossref ищет по библиографии на любом языке. Без
+        # списка — прежний режим: одна склеенная строка.
+        self.queries = [item for item in (queries or ()) if item.strip()]
+        # Журналы по ISSN: не поиск, а «всё, что вышло в журнале за окно».
+        # Так подключаются российские издания, которые по словам не
+        # находятся: у многих в Crossref только заголовок и авторы.
+        self.issns = [item.strip() for item in (issns or ()) if item.strip()]
 
     #: Потолок выдачи за один запрос: постраничного обхода нет.
     page_limit = 1000
@@ -43,13 +55,26 @@ class CrossrefCollector(AsyncHTTPProvider):
         if until is not None:
             # `until-pub-date` включает названный день, поэтому берём предыдущий.
             window += f",until-pub-date:{(until.date() - timedelta(days=1)).isoformat()}"
+        if not self.queries and not self.issns:
+            return await self._search(self.query, window, limit)
+
+        async def fetch(spec: str) -> list[CollectedItem]:
+            if spec.startswith("issn:"):
+                return await self._search(None, f"{window},{spec}", limit)
+            return await self._search(spec, window, limit)
+
+        plan = [*self.queries, *(f"issn:{issn}" for issn in self.issns)]
+        return await gather_queries(plan, fetch, limit=limit, key=lambda item: item.external_id)
+
+    async def _search(self, query: str | None, window: str, limit: int) -> list[CollectedItem]:
         params: dict[str, object] = {
-            "query.bibliographic": self.query,
             "filter": window,
             "rows": min(limit, 1000),
             "sort": "published",
             "order": "desc",
         }
+        if query:
+            params["query.bibliographic"] = query
         if self.email:
             params["mailto"] = self.email
         response = await self._request("GET", "https://api.crossref.org/works", params=params)
@@ -90,6 +115,7 @@ class CrossrefCollector(AsyncHTTPProvider):
             citation_count=work.get("is-referenced-by-count")
             if isinstance(work.get("is-referenced-by-count"), int)
             else None,
+            language=str(work.get("language")) if work.get("language") else None,
             url=primary.get("URL") or work.get("URL") or None,
             code_url=_code_link(links),
             raw=work,

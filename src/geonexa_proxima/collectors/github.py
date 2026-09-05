@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from datetime import datetime, timedelta
 
 from geonexa_proxima.collectors.base import (
@@ -20,44 +22,138 @@ from geonexa_proxima.domain import Author, CollectedItem, ItemKind, SourceName
 QUERY_LIMIT = 256
 
 #: Сколько записей GitHub отдаёт за один запрос. Постраничного обхода здесь
-#: нет, поэтому это же число — реальный потолок выдачи за окно.
+#: нет, поэтому это же число — реальный потолок выдачи за окно на запрос.
 PAGE_LIMIT = 100
 
+#: Сколько простых запросов уходит в GitHub за одно окно. Поиск репозиториев
+#: не понимает скобок и допускает не больше пяти операторов AND/OR/NOT на
+#: запрос: булево выражение профиля («(a AND b) OR (c AND d) OR …») он
+#: отвергал с 422, и источник молчал всегда. Поэтому выражение раскладывается
+#: на простые конъюнкции — по одной на запрос, — а за окно уходит несколько
+#: таких запросов. Лимит поиска — 30 запросов в минуту с токеном и 10 без,
+#: так что четыре с паузой укладываются в любой из них.
+QUERIES_PER_WINDOW = 4
 
-def _fit(query: str, reserved: int, offset: int = 0) -> str:
-    """Уложить набор OR-условий в остаток бюджета длины.
+#: Пауза между запросами поиска. Без неё GitHub отвечает 403 «secondary rate
+#: limit» уже на третьем-четвёртом запросе подряд.
+QUERY_PAUSE_SECONDS = 1.2
 
-    Профиль сбора склеивает дюжину условий через OR, и вместе они дают шестьсот
-    с лишним символов — втрое больше, чем принимает поиск GitHub. Отбрасываем
-    хвост, а не падаем: часть условий приносит материалы, целиком отвергнутый
-    запрос не приносит ничего.
+_BOOLEAN_OR = re.compile(r"\s+OR\s+")
+_BOOLEAN_AND = re.compile(r"\s+AND\s+")
+_BOOLEAN_NOT = re.compile(r"\s+AND\s+NOT\s+\([^)]*\)|\s+NOT\s+\S+")
+_QUALIFIER_IN = re.compile(r"\bin:\S+")
 
-    ``offset`` проворачивает список: сбор идёт каждые сутки, и за три-четыре
-    прогона в запрос попадают все условия профиля, а не одни и те же четыре
-    первых. Смещение считается от даты окна, поэтому повторный прогон за те же
-    сутки даёт тот же запрос — иначе добор материалов зависел бы от того, в
-    какой день его запустили.
+
+def _split_top_level(query: str, separator: re.Pattern[str]) -> list[str]:
+    """Разбить строку по оператору, не залезая внутрь скобок."""
+
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(query):
+        char = query[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            match = separator.match(query, index)
+            if match:
+                parts.append(query[start:index])
+                index = match.end()
+                start = index
+                continue
+        index += 1
+    parts.append(query[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _strip_parentheses(part: str) -> str:
+    part = part.strip()
+    while part.startswith("(") and part.endswith(")"):
+        # Снимаем только парные внешние скобки: «(a) OR (b)» ими не является.
+        depth = 0
+        balanced = True
+        for index, char in enumerate(part):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(part) - 1:
+                    balanced = False
+                    break
+        if not balanced:
+            break
+        part = part[1:-1].strip()
+    return part
+
+
+def simple_queries(query: str) -> list[str]:
+    """Разложить булево выражение на список простых запросов GitHub.
+
+    OR на любой глубине становится границей запроса, AND — пробелом (для
+    поиска GitHub пробел и есть неявное AND), NOT-хвосты отбрасываются:
+    исключения дешевле применить гейтом по ответу, чем объяснять их поиску,
+    который понимает только «-слово». Каждый результат — конъюнкция фраз в
+    кавычках, которую поиск репозиториев принимает без вопросов.
+    """
+
+    flat: list[str] = []
+
+    def visit(expression: str) -> None:
+        expression = _strip_parentheses(expression)
+        if not expression:
+            return
+        alternatives = _split_top_level(expression, _BOOLEAN_OR)
+        if len(alternatives) > 1:
+            for alternative in alternatives:
+                visit(alternative)
+            return
+        conjuncts = _split_top_level(expression, _BOOLEAN_AND)
+        if len(conjuncts) > 1:
+            pieces: list[str] = []
+            for conjunct in conjuncts:
+                if conjunct.upper().startswith("NOT ") or conjunct.upper().startswith("NOT("):
+                    continue
+                nested = simple_queries(conjunct)
+                # Внутри AND-ветки собственный OR раскрывать не станем — это
+                # взрыв комбинаций; берём первую альтернативу, остальные
+                # придут с ротацией в другие сутки через соседние ветки.
+                if nested:
+                    pieces.append(nested[0])
+            if pieces:
+                flat.append(" ".join(pieces))
+            return
+        cleaned = _BOOLEAN_NOT.sub("", expression).strip()
+        # Квалификатор полей добавляет сам коллектор — из запроса профиля его
+        # убираем, иначе он окажется в строке дважды.
+        cleaned = _QUALIFIER_IN.sub(" ", cleaned).strip()
+        cleaned = _strip_parentheses(cleaned)
+        if cleaned:
+            flat.append(cleaned)
+
+    visit(query)
+    return list(dict.fromkeys(flat))
+
+
+def _fit(query: str, reserved: int) -> str:
+    """Уложить один простой запрос в остаток бюджета длины.
+
+    Обрезаем по границе слова: обрезанный запрос всё-таки ищет, а превысивший
+    лимит не ищет вовсе.
     """
 
     budget = QUERY_LIMIT - reserved
-    parts = [part.strip() for part in query.split(" OR ") if part.strip()]
-    if not parts:
-        return ""
-    start = offset % len(parts)
-    rotated = parts[start:] + parts[:start]
-    kept: list[str] = []
-    length = 0
-    for part in rotated:
-        addition = len(part) + (4 if kept else 0)
-        if length + addition > budget:
-            break
-        kept.append(part)
-        length += addition
-    if not kept:
-        # Даже одно условие не влезло — режем его по живому: обрезанный запрос
-        # всё-таки ищет, а превысивший лимит не ищет вовсе.
-        return rotated[0][:budget]
-    return " OR ".join(kept)
+    if len(query) <= budget:
+        return query
+    cut = query[:budget]
+    if " " in cut:
+        cut = cut[: cut.rfind(" ")]
+    # Незакрытая кавычка после обрезки тоже даёт 422.
+    if cut.count('"') % 2:
+        cut = cut[: cut.rfind('"')].rstrip()
+    return cut
 
 
 def _pushed(since: datetime, until: datetime | None) -> str:
@@ -81,12 +177,14 @@ class GitHubCollector(AsyncHTTPProvider):
         taxonomy: TaxonomyInput = None,
         *,
         token: str | None = None,
+        queries_per_window: int = QUERIES_PER_WINDOW,
         **kwargs: object,
     ) -> None:
         kwargs.setdefault("user_agent", "GeoNexa-Proxima/0.1 (GitHub research collector)")
         super().__init__(**kwargs)
         self.query = combined_query(query, taxonomy) or "geotechnical geospatial"
         self.token = token
+        self.queries_per_window = max(1, queries_per_window)
 
     #: Читается сборщиком: по нему видно, что источник упёрся в свой потолок,
     #: а не в `MAX_ITEMS_PER_SOURCE`.
@@ -101,23 +199,49 @@ class GitHubCollector(AsyncHTTPProvider):
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        response = await self._request(
-            "GET",
-            "https://api.github.com/search/repositories",
-            params={
-                "q": self._search_query(since, until),
-                "sort": "updated",
-                "order": "desc",
-                "per_page": min(limit, 100),
-            },
-            headers=headers,
-        )
-        repositories = as_list(as_dict(response.json()).get("items"))
-        return [self._to_item(as_dict(repository)) for repository in repositories[:limit]]
+        seen: dict[str, CollectedItem] = {}
+        for index, query in enumerate(self._search_queries(since, until)):
+            if index:
+                await asyncio.sleep(QUERY_PAUSE_SECONDS)
+            response = await self._request(
+                "GET",
+                "https://api.github.com/search/repositories",
+                params={
+                    "q": query,
+                    "sort": "updated",
+                    "order": "desc",
+                    "per_page": min(limit, PAGE_LIMIT),
+                },
+                headers=headers,
+            )
+            for repository in as_list(as_dict(response.json()).get("items")):
+                item = self._to_item(as_dict(repository))
+                # Один репозиторий отвечает на несколько запросов профиля —
+                # в корпус он должен попасть один раз.
+                seen.setdefault(item.external_id, item)
+            if len(seen) >= limit:
+                break
+        return list(seen.values())[:limit]
+
+    def _search_queries(self, since: datetime, until: datetime | None) -> list[str]:
+        """Простые запросы на окно: ротация по дате, чтобы обойти весь профиль.
+
+        Смещение считается от даты окна, поэтому повторный прогон за те же
+        сутки даёт те же запросы — иначе добор материалов зависел бы от того,
+        в какой день его запустили.
+        """
+
+        suffix = f" in:name,description,readme pushed:{_pushed(since, until)}"
+        parts = simple_queries(self.query) or [self.query]
+        start = since.date().toordinal() * self.queries_per_window % len(parts)
+        rotated = parts[start:] + parts[:start]
+        chosen = rotated[: self.queries_per_window]
+        return [_fit(part, len(suffix)) + suffix for part in chosen]
 
     def _search_query(self, since: datetime, until: datetime | None) -> str:
-        suffix = f") in:name,description,readme pushed:{_pushed(since, until)}"
-        return "(" + _fit(self.query, len(suffix) + 1, since.date().toordinal()) + suffix
+        """Первый запрос окна — для тестов и отладки."""
+
+        return self._search_queries(since, until)[0]
 
     @staticmethod
     def _to_item(repository: dict[str, object]) -> CollectedItem:

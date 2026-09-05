@@ -229,6 +229,8 @@ class SQLAlchemyUserProfileRepository:
         name: str,
         *,
         description: str | None = None,
+        description_en: str | None = None,
+        translation_source_hash: str | None = None,
         compiled_text: str = "",
         is_active: bool = False,
         digest_enabled: bool = False,
@@ -254,6 +256,8 @@ class SQLAlchemyUserProfileRepository:
                 name=cleaned_name,
                 normalized_name=normalized_name,
                 description=clean_description(description),
+                description_en=clean_description(description_en),
+                translation_source_hash=translation_source_hash,
                 compiled_text=compiled_text.strip(),
                 version=1,
                 is_active=activate,
@@ -271,6 +275,8 @@ class SQLAlchemyUserProfileRepository:
         *,
         name: str | None = None,
         description: str | None = None,
+        description_en: str | None = None,
+        translation_source_hash: str | None = None,
         compiled_text: str | None = None,
         digest_enabled: bool | None = None,
         digest_settings: dict[str, object] | None = None,
@@ -296,6 +302,16 @@ class SQLAlchemyUserProfileRepository:
                 cleaned_description = clean_description(description)
                 if model.description != cleaned_description:
                     model.description = cleaned_description
+                    changed = True
+            if description_en is not None:
+                cleaned_english = clean_description(description_en)
+                if model.description_en != cleaned_english:
+                    model.description_en = cleaned_english
+                    changed = True
+            if translation_source_hash is not None:
+                stored_hash = translation_source_hash or None
+                if model.translation_source_hash != stored_hash:
+                    model.translation_source_hash = stored_hash
                     changed = True
             if compiled_text is not None:
                 cleaned_compiled_text = compiled_text.strip()

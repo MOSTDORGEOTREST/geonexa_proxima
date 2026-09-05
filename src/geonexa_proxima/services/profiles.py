@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -17,6 +18,14 @@ from geonexa_proxima.domain import (
     UserStatus,
 )
 from geonexa_proxima.ports import UserProfileRepository
+from geonexa_proxima.services.translation import (
+    Translator,
+    bilingual_term,
+    is_russian,
+    source_fingerprint,
+)
+
+logger = logging.getLogger("geonexa.profiles")
 
 
 class ProfileCompiler:
@@ -31,12 +40,18 @@ class ProfileCompiler:
         description: str | None,
         interests: Sequence[ProfileInterest],
         learned_signals: Sequence[ProfileInterestSignal],
+        description_en: str | None = None,
     ) -> str:
         sections: list[str] = []
         if self._base_taxonomy_text:
             sections.append(f"Base taxonomy:\n{self._base_taxonomy_text}")
         if description and description.strip():
             sections.append(f"Profile description:\n{description.strip()}")
+        if description_en and description_en.strip():
+            # Английская сторона — отдельным разделом, а не вперемешку: грани
+            # режутся по разделам, и русская тема с её переводом становятся
+            # двумя гранями — по одной на каждый язык корпуса.
+            sections.append(f"Profile description (English):\n{description_en.strip()}")
 
         explicit_lines = [
             self._explicit_line(interest)
@@ -92,6 +107,7 @@ def compile_profile(
     description: str | None = None,
     interests: Sequence[ProfileInterest] = (),
     learned_signals: Sequence[ProfileInterestSignal] = (),
+    description_en: str | None = None,
 ) -> str:
     """Functional facade for callers that do not need a long-lived compiler."""
 
@@ -99,6 +115,7 @@ def compile_profile(
         description=description,
         interests=interests,
         learned_signals=learned_signals,
+        description_en=description_en,
     )
 
 
@@ -111,10 +128,69 @@ class UserProfileService:
         base_taxonomy_text: str,
         *,
         default_profile_name: str = "Default",
+        translator: Translator | None = None,
     ) -> None:
         self._repository = repository
         self._compiler = ProfileCompiler(base_taxonomy_text)
         self._default_profile_name = default_profile_name
+        # Без переводчика профиль остаётся одноязычным — так работают тесты
+        # и окружения без LLM. Сбой перевода профиль не блокирует: описание
+        # сохраняется, а перевод догоняется при следующей сборке.
+        self._translator = translator
+
+    async def _translate(
+        self, description: str | None, current: UserProfile | None = None
+    ) -> tuple[str | None, str | None]:
+        """Английская сторона описания и отпечаток исходника.
+
+        Перевод считается заново только когда описание изменилось: отпечаток
+        хранится рядом с переводом. Английское описание переводом не
+        считается — оно и есть английская сторона.
+        """
+
+        fingerprint = source_fingerprint(description)
+        if fingerprint is None:
+            return None, None
+        if (
+            current is not None
+            and current.translation_source_hash == fingerprint
+            and current.description_en
+        ):
+            return current.description_en, fingerprint
+        text = (description or "").strip()
+        if not is_russian(text):
+            return text, fingerprint
+        if self._translator is None:
+            return None, None
+        try:
+            english = await self._translator.translate_description(text)
+        except Exception as error:
+            logger.warning(
+                "Перевод описания профиля не удался, останется одноязычным до следующей "
+                "сборки: %s: %s",
+                type(error).__name__,
+                error,
+            )
+            return None, None
+        return english or None, fingerprint
+
+    async def _translate_interest(self, query: str | None) -> str | None:
+        """Явная тема в формате «en; ru»: без английского написания она не даёт
+        буквальной прибавки — а именно в ней смысл явной темы."""
+
+        if not query or ";" in query or not is_russian(query) or self._translator is None:
+            return query
+        try:
+            english = await self._translator.translate_term(query)
+        except Exception as error:
+            logger.warning(
+                "Перевод темы «%s» не удался, тема сохранена как есть: %s: %s",
+                query,
+                type(error).__name__,
+                error,
+            )
+            return query
+        return bilingual_term(query, english) if english else query
 
     async def register_user(
         self,
@@ -185,15 +261,19 @@ class UserProfileService:
         digest_enabled: bool = False,
         digest_settings: dict[str, object] | None = None,
     ) -> UserProfile:
+        description_en, fingerprint = await self._translate(description)
         compiled_text = self._compiler.compile_profile(
             description=description,
             interests=(),
             learned_signals=(),
+            description_en=description_en,
         )
         return await self._repository.create_profile(
             user_id,
             name,
             description=description,
+            description_en=description_en,
+            translation_source_hash=fingerprint,
             compiled_text=compiled_text,
             is_active=is_active,
             digest_enabled=digest_enabled,
@@ -212,18 +292,22 @@ class UserProfileService:
     ) -> UserProfile:
         current = await self._get_profile(user_id, profile_id)
         effective_description = current.description if description is None else description
+        description_en, fingerprint = await self._translate(effective_description, current)
         interests = await self._repository.list_interests(user_id, profile_id)
         signals = await self._repository.list_profile_signals(user_id, profile_id)
         compiled_text = self._compiler.compile_profile(
             description=effective_description,
             interests=interests,
             learned_signals=signals,
+            description_en=description_en,
         )
         return await self._repository.update_profile(
             user_id,
             profile_id,
             name=name,
             description=description,
+            description_en=description_en or "",
+            translation_source_hash=fingerprint or "",
             compiled_text=compiled_text,
             digest_enabled=digest_enabled,
             digest_settings=digest_settings,
@@ -251,7 +335,7 @@ class UserProfileService:
             user_id,
             profile_id,
             topic_id=topic_id,
-            query=query,
+            query=await self._translate_interest(query),
             polarity=polarity,
             weight=weight,
         )
@@ -307,16 +391,20 @@ class UserProfileService:
 
     async def compile_profile(self, user_id: UUID, profile_id: UUID) -> UserProfile:
         profile = await self._get_profile(user_id, profile_id)
+        description_en, fingerprint = await self._translate(profile.description, profile)
         interests = await self._repository.list_interests(user_id, profile_id)
         signals = await self._repository.list_profile_signals(user_id, profile_id)
         compiled_text = self._compiler.compile_profile(
             description=profile.description,
             interests=interests,
             learned_signals=signals,
+            description_en=description_en,
         )
         return await self._repository.update_profile(
             user_id,
             profile_id,
+            description_en=description_en or "",
+            translation_source_hash=fingerprint or "",
             compiled_text=compiled_text,
         )
 

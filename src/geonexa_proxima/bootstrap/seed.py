@@ -493,3 +493,135 @@ async def bootstrap(
         "migrated": not before.is_current,
         "seed": report.as_dict(),
     }
+
+
+async def sync_harvest_profile(engine: AsyncEngine, settings: Settings) -> dict[str, int]:
+    """Привести профиль сбора в базе к `config/harvest.yaml`.
+
+    Сидер не трогает существующий профиль — его правят в админке. Но правило
+    отбора и термины живут и в YAML, который читает матчер на старте, и после
+    правки файла экран «Сбор» показывал бы прежние группы и прежнее satisfy,
+    а прогон работал бы по новым. Эта функция — явное «перечитать файл»:
+    поля профиля и группы обновляются, термины досеиваются и удаляются
+    те, которых в файле больше нет; счётчики попаданий у оставшихся терминов
+    сохраняются.
+    """
+
+    profile = load_harvest_profile(settings.harvest_config_path)
+    report = {"groups_upserted": 0, "terms_upserted": 0, "terms_removed": 0, "groups_removed": 0}
+    async with engine.begin() as connection:
+        profile_id = await connection.scalar(
+            text(
+                """
+                INSERT INTO harvest_profiles (
+                    id, key, name, description, satisfy_expr, keyword_score_threshold,
+                    borderline_semantic_threshold, languages, item_kinds, is_active)
+                VALUES (gen_random_uuid(), :key, :name, :description, :satisfy,
+                        :keyword_threshold, :semantic_threshold,
+                        CAST(:languages AS text[]), CAST(:kinds AS text[]), true)
+                ON CONFLICT (key) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    satisfy_expr = EXCLUDED.satisfy_expr,
+                    keyword_score_threshold = EXCLUDED.keyword_score_threshold,
+                    borderline_semantic_threshold = EXCLUDED.borderline_semantic_threshold,
+                    languages = EXCLUDED.languages,
+                    item_kinds = EXCLUDED.item_kinds,
+                    updated_at = now()
+                RETURNING id
+                """
+            ),
+            {
+                "key": profile.key,
+                "name": profile.name,
+                "description": profile.description,
+                "satisfy": profile.satisfy_expr,
+                "keyword_threshold": profile.keyword_score_threshold,
+                "semantic_threshold": profile.borderline_semantic_threshold,
+                "languages": list(profile.languages),
+                "kinds": list(profile.item_kinds),
+            },
+        )
+        keys = [group.key for group in profile.groups]
+        removed = await connection.execute(
+            text(
+                "DELETE FROM harvest_term_groups WHERE harvest_profile_id = :profile_id"
+                " AND NOT (key = ANY(CAST(:keys AS text[]))) RETURNING id"
+            ),
+            {"profile_id": profile_id, "keys": keys},
+        )
+        report["groups_removed"] = len(removed.fetchall())
+        for position, group in enumerate(profile.groups):
+            group_id = await connection.scalar(
+                text(
+                    """
+                    INSERT INTO harvest_term_groups (
+                        id, harvest_profile_id, key, name, mode, min_matches, fields,
+                        weight, is_hard, penalty, affects_satisfy, enabled, position)
+                    VALUES (gen_random_uuid(), :profile_id, :key, :name, :mode, :min_matches,
+                            CAST(:fields AS text[]), :weight, :is_hard, :penalty,
+                            :affects_satisfy, :enabled, :position)
+                    ON CONFLICT (harvest_profile_id, key) DO UPDATE SET
+                        name = EXCLUDED.name, mode = EXCLUDED.mode,
+                        min_matches = EXCLUDED.min_matches, fields = EXCLUDED.fields,
+                        weight = EXCLUDED.weight, is_hard = EXCLUDED.is_hard,
+                        penalty = EXCLUDED.penalty, affects_satisfy = EXCLUDED.affects_satisfy,
+                        enabled = EXCLUDED.enabled, position = EXCLUDED.position
+                    RETURNING id
+                    """
+                ),
+                {
+                    "profile_id": profile_id,
+                    "key": group.key,
+                    "name": group.name or None,
+                    "mode": group.mode.value,
+                    "min_matches": group.min_matches,
+                    "fields": list(group.fields),
+                    "weight": group.weight,
+                    "is_hard": group.is_hard,
+                    "penalty": group.penalty,
+                    "affects_satisfy": group.affects_satisfy,
+                    "enabled": group.enabled,
+                    "position": position,
+                },
+            )
+            report["groups_upserted"] += 1
+            normalized_terms: list[str] = []
+            for term in group.terms:
+                normalized = (
+                    term.pattern.pattern
+                    if term.match_type.value == "regex"
+                    else _normalized(term.term)
+                )
+                normalized_terms.append(normalized)
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO harvest_terms (
+                            id, group_id, term, normalized_term, match_type, lang, weight)
+                        VALUES (gen_random_uuid(), :group_id, :term, :normalized, :match_type,
+                                :lang, :weight)
+                        ON CONFLICT (group_id, normalized_term, match_type) DO UPDATE SET
+                            term = EXCLUDED.term, lang = EXCLUDED.lang,
+                            weight = EXCLUDED.weight
+                        """
+                    ),
+                    {
+                        "group_id": group_id,
+                        "term": term.term,
+                        "normalized": normalized,
+                        "match_type": term.match_type.value,
+                        "lang": term.lang,
+                        "weight": term.weight,
+                    },
+                )
+                report["terms_upserted"] += 1
+            gone = await connection.execute(
+                text(
+                    "DELETE FROM harvest_terms WHERE group_id = :group_id"
+                    " AND NOT (normalized_term = ANY(CAST(:kept AS text[]))) RETURNING id"
+                ),
+                {"group_id": group_id, "kept": normalized_terms},
+            )
+            report["terms_removed"] += len(gone.fetchall())
+    return report

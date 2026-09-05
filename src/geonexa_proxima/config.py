@@ -313,9 +313,9 @@ class Settings(BaseSettings):
     #: Сколько пропущенных суток добирает один плановый прогон. Глубже —
     #: только руками с указанием дат: сотня запросов подряд после долгого
     #: простоя приносит бан, а не материалы.
-    harvest_max_catchup_days: int = Field(default=7, ge=1, le=90)
-    max_items_per_source: int = Field(default=300, ge=1, le=5000)
-    harvest_keyword_threshold: float = Field(default=0.35, ge=0, le=1)
+    harvest_max_catchup_days: int = Field(default=7, ge=1, le=400)
+    max_items_per_source: int = Field(default=1000, ge=1, le=5000)
+    harvest_keyword_threshold: float = Field(default=0.0, ge=0, le=1)
     harvest_store_rejected: bool = True
     harvest_decision_retention_days: int = Field(default=90, ge=1, le=3650)
     #: Через сколько минут «выполняющийся» прогон считать оборванным. Частичный
@@ -326,7 +326,7 @@ class Settings(BaseSettings):
     harvest_run_stale_minutes: int = Field(default=90, ge=5, le=10080)
 
     # --- пороги пайплайна ---------------------------------------------------
-    semantic_threshold: float = Field(default=0.45, ge=-1, le=1)
+    semantic_threshold: float = Field(default=0.25, ge=-1, le=1)
     digest_score_threshold: float = Field(default=6.5, ge=0, le=10)
     deep_analysis_threshold: float = Field(default=8.0, ge=0, le=10)
     alert_score_threshold: float = Field(default=9.0, ge=0, le=10)
@@ -342,7 +342,7 @@ class Settings(BaseSettings):
     # всё сразу. Поэтому ищем ещё и каждой темой отдельно, а близость берём
     # максимумом. `PROFILE_FACET_LIMIT=0` возвращает прежнее поведение с
     # одним вектором на весь профиль.
-    profile_facet_limit: int = Field(default=8, ge=0, le=32)
+    profile_facet_limit: int = Field(default=16, ge=0, le=64)
     profile_facet_min_chars: int = Field(default=16, ge=4, le=200)
     # Сколько кандидатов тянуть одной гранью. Меньше, чем полным профилем:
     # граней несколько, и общий объём выборки растёт их числом.

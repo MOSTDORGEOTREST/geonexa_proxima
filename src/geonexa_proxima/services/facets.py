@@ -27,11 +27,18 @@ from typing import Final
 #: Заголовки разделов, которые пишет `ProfileCompiler`. Держим их здесь же,
 #: чтобы разбор и сборка расходились с ошибкой теста, а не молча.
 DESCRIPTION_SECTION: Final = "Profile description"
+DESCRIPTION_EN_SECTION: Final = "Profile description (English)"
 INTERESTS_SECTION: Final = "Explicit interests"
 TAXONOMY_SECTION: Final = "Base taxonomy"
 SIGNALS_SECTION: Final = "Learned interest signals"
 
-_SECTIONS: Final = (TAXONOMY_SECTION, DESCRIPTION_SECTION, INTERESTS_SECTION, SIGNALS_SECTION)
+_SECTIONS: Final = (
+    TAXONOMY_SECTION,
+    DESCRIPTION_SECTION,
+    DESCRIPTION_EN_SECTION,
+    INTERESTS_SECTION,
+    SIGNALS_SECTION,
+)
 
 #: Заголовок раздела: с начала строки и до конца строки.
 _HEADER = re.compile(
@@ -225,6 +232,12 @@ def build_facets(
     candidates: list[tuple[str, str]] = [
         (chunk, "description")
         for chunk in split_sentences(parts.get(DESCRIPTION_SECTION, ""), min_chars=min_chars)
+    ]
+    # Английская сторона профиля — такие же грани: корпус почти весь
+    # английский, и именно эти грани находят больше всего.
+    candidates += [
+        (chunk, "description_en")
+        for chunk in split_sentences(parts.get(DESCRIPTION_EN_SECTION, ""), min_chars=min_chars)
     ]
     for interest in parse_interests(parts.get(INTERESTS_SECTION, "")):
         if interest.is_negative:
